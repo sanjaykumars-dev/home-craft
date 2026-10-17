@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HomeCraft · Home Builder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/",
+      "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3.1.0/lib/three-vrm.module.min.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./" title="HomeCraft home page">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 15L16 5l12 10" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 13v13h16V13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/><rect x="13.5" y="18" width="5" height="8" rx="1" fill="currentColor"/></svg>
+      <span>HomeCraft</span>
+    </a>
+    <div class="tb-group">
+      <button id="btn-new" title="Start an empty project">New</button>
+      <button id="btn-designs" title="Start from a ready-made house design">Designs</button>
+      <button id="btn-open" title="Open a saved .json project">Open</button>
+      <button id="btn-save" title="Download the project as .json (Ctrl+S)">Save</button>
+      <input type="file" id="file-input" accept=".json,application/json" hidden>
+    </div>
+    <div class="tb-group">
+      <button id="btn-undo" class="icon" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+      <button id="btn-redo" class="icon" title="Redo (Ctrl+Y)"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+    </div>
+    <div class="tb-group level-group">
+      <label for="level-select">Level</label>
+      <select id="level-select"></select>
+      <button id="btn-add-level" title="Add a new storey on top">+ Storey</button>
+    </div>
+    <div class="spacer"></div>
+    <button id="btn-pro" class="pill" title="Engineer mode: door/window tags, opening dimension chains, schedules">Engineer mode</button>
+    <select id="units-select" title="Drawing units">
+      <option value="m">Metres</option><option value="cm">Centimetres</option><option value="mm">Millimetres</option><option value="ft">Feet &amp; inches</option>
+    </select>
+    <div class="seg" id="view-seg" title="Viewer layout">
+      <button data-view="2d">2D</button><button data-view="split">Split</button><button data-view="3d">3D</button>
+    </div>
+    <button id="btn-tour" class="accent-btn" title="Guided walkthrough of the whole house with narration">▶ Spectate</button>
+    <button id="btn-pdf" class="primary" title="Download the complete drawing set & construction guide as PDF">Export PDF</button>
+  </header>
+
+  <main class="layout">
+    <aside class="left">
+      <div class="tools">
+        <button class="tool" data-tool="select" title="Select & move (V)"><span class="ti" data-icon="select"></span>Select</button>
+        <button class="tool" data-tool="measure" title="Measure distance (M)"><span class="ti" data-icon="measure"></span>Measure</button>
+        <button class="tool" data-tool="dimension" title="Add a permanent dimension line (D)"><span class="ti" data-icon="measure"></span>Dimension</button>
+        <button class="tool" data-tool="room" title="Draw a plain room (E)"><span class="ti" data-icon="room"></span>Room</button>
+      </div>
+      <div class="seg scope" id="scope-seg" title="Workspace: edit the inside or the outside of the house">
+        <button data-scope="all">All</button><button data-scope="indoor">🛋 Indoor</button><button data-scope="outdoor">🌳 Outdoor</button>
+      </div>
+      <div class="search"><input id="search" type="search" placeholder="Search toilet, pooja, gate, stairs…" autocomplete="off"></div>
+      <div id="palette"></div>
+      <p class="palette-tip">Click an item then click the plan, or drag it straight into the 2D or 3D view.</p>
+    </aside>
+
+    <section class="stage mode-split" id="stage">
+      <div class="pane pane-2d" id="pane-2d">
+        <canvas id="plan"></canvas>
+        <div class="pane-tag"><span class="dot"></span><span id="tag-2d">2D Plan</span></div>
+        <div class="pane-tools" id="tools-2d">
+          <button data-act="zoom-in" title="Zoom in">＋</button>
+          <button data-act="zoom-out" title="Zoom out">－</button>
+          <button data-act="fit" title="Fit to screen (F)">Fit</button>
+          <span class="sep"></span>
+          <button data-toggle="dims" title="Show dimensions">Dimensions</button>
+          <button data-act="dimset" title="Dimension settings: what to show, measuring rule, precision, snap">⚙</button>
+          <button data-toggle="grid" title="Show grid">Grid</button>
+          <button data-toggle="snap" title="Snap to grid & corners (hold Shift to bypass)">Snap</button>
+          <span class="sep"></span>
+          <button data-act="png" title="Download the plan as an image">PNG</button>
+        </div>
+        <div class="hint" id="hint"></div>
+        <div class="popover" id="dim-pop" hidden></div>
+      </div>
+      <div class="pane pane-3d" id="pane-3d">
+        <div class="pane-tag"><span class="dot green"></span>3D View</div>
+        <div class="pane-tools" id="tools-3d">
+          <select id="elev-select" title="Orthographic elevation views with level markers">
+            <option value="">Perspective</option><option value="front">Front elevation</option><option value="rear">Rear elevation</option>
+            <option value="left">Left elevation</option><option value="right">Right elevation</option>
+          </select>
+          <button data-act="walk" title="Walk through the house (WASD + drag to look)">Walk</button>
+          <button data-act="frame" title="Reset camera">Reset</button>
+          <button data-act="top" title="Top-down view">Top</button>
+          <span class="sep"></span>
+          <button data-toggle="roof" title="Show roofs">Roof</button>
+          <button data-toggle="upper" title="Show storeys above the current level">Upper floors</button>
+          <span class="sep"></span>
+          <label class="sun" title="Time of day (sun position)">☀<input type="range" id="sun" min="6" max="19" step="0.25" value="15.5"><span id="sun-val">15:30</span></label>
+          <button data-act="shot" title="Download a photo of the 3D view">Photo</button>
+        </div>
+        <div class="walk-help">Walk mode · <b>W A S D</b> move · drag to look · <b>Shift</b> run · <b>Q/E</b> down/up · <b>Esc</b> exit</div>
+        <div class="loading" id="loading3d">Loading 3D engine…</div>
+        <div class="play-hud" id="play-hud" hidden>
+          <div class="ph-top">
+            <div class="ph-where"><b id="ph-room">Outside</b><span id="ph-level"></span></div>
+            <div class="ph-btns">
+              <button id="ph-physics" title="Show the physics rules">Physics</button>
+              <button id="ph-auto" title="Let the guide lead an automatic tour">Auto tour</button>
+              <button id="ph-exit">Exit</button>
+            </div>
+          </div>
+          <div class="ph-keys"><kbd>W</kbd>/<kbd>S</kbd> walk · <kbd>A</kbd>/<kbd>D</kbd> turn · <kbd>Q</kbd>/<kbd>E</kbd> side-step · <kbd>Shift</kbd> run · <kbd>Space</kbd> jump · drag to turn & look up/down · <kbd>V</kbd> first person · <kbd>Esc</kbd> exit</div>
+          <div class="ph-stats"><span id="ph-speed">0.0 m/s</span><span id="ph-state">on ground</span><span id="ph-height">FFL +0.00</span></div>
+          <div class="ph-physics" id="ph-physics-panel" hidden></div>
+        </div>
+        <div class="tour" id="tour" hidden>
+          <div class="tour-card">
+            <div class="tour-step" id="tour-step"></div>
+            <h3 id="tour-title"></h3>
+            <p id="tour-text" hidden></p>
+            <div class="tour-facts" id="tour-facts" hidden></div>
+            <div class="tour-ctl">
+              <button id="tour-prev" title="Previous stop">◀</button>
+              <button id="tour-play" title="Pause / play">❚❚</button>
+              <button id="tour-next" title="Next stop">▶</button>
+              <input type="checkbox" id="tour-voice" hidden>
+              <span class="spacer"></span>
+              <button id="tour-exit">Exit tour</button>
+            </div>
+            <div class="tour-bar"><span id="tour-progress"></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="right" id="props"></aside>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status-coords">X —  Y —</span>
+    <span id="status-tool"></span>
+    <span class="spacer"></span>
+    <span id="status-count"></span>
+    <span id="status-saved">Autosaved</span>
+  </footer>
+  <div id="toasts"></div>
+  <div class="modal" id="modal" hidden><div class="modal-box" id="modal-box"></div></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

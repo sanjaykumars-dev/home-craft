@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HomeCraft · Free 2D & 3D House Designer</title>
+  <meta name="description" content="Design your house in 2D and 3D, walk through it, and export an engineer-standard PDF drawing set for your mason. Free, no sign-up, runs in your browser.">
+  <meta property="og:title" content="HomeCraft · Free 2D & 3D House Designer">
+  <meta property="og:description" content="Pick-and-place house design with real dimensions, Kerala architecture, a walkable 3D tour and a PDF drawing set.">
+  <meta property="og:image" content="assets/shots/kerala-traditional.jpg">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M4 15L16 5l12 10' fill='none' stroke='%23b9583a' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M8 13v13h16V13' fill='none' stroke='%23b9583a' stroke-width='3' stroke-linejoin='round'/%3E%3Crect x='13.5' y='18' width='5' height='8' rx='1' fill='%23b9583a'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fbf8f3; --bg-2: #f3ede3; --card: #ffffff; --ink: #1c1917; --muted: #6b635b; --line: #e7dfd3;
+      --terra: #b9583a; --terra-d: #96432a; --leaf: #2f6b3f; --blue: #2563eb;
+      --r: 14px; --shadow: 0 1px 2px rgba(60, 40, 20, .06), 0 12px 32px rgba(60, 40, 20, .10);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, sans-serif; color: var(--ink); background: var(--bg); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+    img { max-width: 100%; height: auto; display: block; }
+    a { color: inherit; }
+    h1, h2, h3 { font-family: Fraunces, Georgia, serif; line-height: 1.15; letter-spacing: -.015em; margin: 0; }
+    .wrap { max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+
+    /* nav */
+    nav { position: sticky; top: 0; z-index: 10; background: rgba(251, 248, 243, .88); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+    nav .wrap { display: flex; align-items: center; gap: 28px; height: 64px; }
+    .logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 18px; text-decoration: none; }
+    .logo svg { width: 28px; height: 28px; color: var(--terra); }
+    .links { display: flex; gap: 22px; margin-left: auto; }
+    .links a { text-decoration: none; color: var(--muted); font-weight: 500; font-size: 15px; }
+    .links a:hover { color: var(--ink); }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: 10px; font-weight: 600; font-size: 15px; text-decoration: none; border: 1px solid transparent; transition: background .15s, transform .15s; }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary { background: var(--terra); color: #fff; }
+    .btn.primary:hover { background: var(--terra-d); }
+    .btn.ghost { border-color: var(--line); background: var(--card); }
+    .btn.ghost:hover { border-color: #d6cab8; }
+    .btn.small { padding: 8px 14px; font-size: 14px; }
+
+    /* hero */
+    .hero { padding: 72px 0 40px; }
+    .hero .wrap { display: grid; grid-template-columns: 1fr 1.15fr; gap: 56px; align-items: center; }
+    .eyebrow { display: inline-block; font-size: 13px; font-weight: 600; color: var(--leaf); background: #e6f0e8; padding: 5px 12px; border-radius: 99px; margin-bottom: 18px; }
+    .hero h1 { font-size: clamp(36px, 5vw, 56px); }
+    .hero h1 em { font-style: normal; color: var(--terra); }
+    .hero p.lead { font-size: 18px; color: var(--muted); margin: 20px 0 28px; max-width: 34em; }
+    .cta { display: flex; gap: 12px; flex-wrap: wrap; }
+    .chips { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 26px; font-size: 14px; color: var(--muted); }
+    .chips span::before { content: "✓"; color: var(--leaf); font-weight: 700; margin-right: 6px; }
+    .frame { background: var(--card); border-radius: var(--r); box-shadow: var(--shadow); border: 1px solid var(--line); overflow: hidden; }
+    .frame .bar { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: #faf7f2; }
+    .frame .bar i { width: 10px; height: 10px; border-radius: 50%; background: #e2d8ca; }
+    .hero-shot { position: relative; }
+    .hero-shot .plan { position: absolute; width: 46%; left: -9%; bottom: -12%; border-radius: 12px; box-shadow: var(--shadow); border: 4px solid #fff; background: #fff; }
+
+    section { padding: 88px 0; }
+    .sec-h { max-width: 640px; margin-bottom: 44px; }
+    .sec-h h2 { font-size: clamp(28px, 3.6vw, 40px); }
+    .sec-h p { color: var(--muted); font-size: 17px; margin: 14px 0 0; }
+    .alt { background: var(--bg-2); }
+
+    /* steps */
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; counter-reset: s; }
+    .step { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 26px; }
+    .step::before { counter-increment: s; content: counter(s); display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--terra); color: #fff; font-weight: 700; margin-bottom: 14px; }
+    .step h3 { font-size: 20px; margin-bottom: 6px; }
+    .step p { margin: 0; color: var(--muted); }
+
+    /* features */
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+    .feat { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 22px; }
+    .feat .ic { font-size: 26px; margin-bottom: 10px; }
+    .feat h3 { font-family: Inter, sans-serif; font-size: 16px; font-weight: 700; letter-spacing: 0; margin-bottom: 6px; }
+    .feat p { margin: 0; font-size: 14.5px; color: var(--muted); }
+
+    /* split rows */
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+    .row + .row { margin-top: 72px; }
+    .row.flip > :first-child { order: 2; }
+    .row h2 { font-size: clamp(26px, 3.2vw, 36px); margin-bottom: 14px; }
+    .row p { color: var(--muted); font-size: 16.5px; }
+    ul.ticks { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 8px; }
+    ul.ticks li { padding-left: 26px; position: relative; }
+    ul.ticks li::before { content: ""; position: absolute; left: 0; top: .5em; width: 14px; height: 8px; border-left: 2.5px solid var(--leaf); border-bottom: 2.5px solid var(--leaf); transform: rotate(-45deg); }
+    .sheets { columns: 2; gap: 24px; }
+
+    /* designs */
+    .designs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; }
+    .design { margin: 0; }
+    .design img { aspect-ratio: 16 / 9; object-fit: cover; width: 100%; }
+    .design figcaption { padding: 14px 18px 16px; }
+    .design b { font-size: 17px; }
+    .design small { display: block; color: var(--muted); font-size: 14px; margin-top: 2px; }
+
+    /* audience */
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+    .aud { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 30px; }
+    .aud h3 { font-size: 24px; margin-bottom: 4px; }
+    .aud > p { color: var(--muted); margin: 0; }
+
+    /* faq */
+    details { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }
+    details + details { margin-top: 12px; }
+    summary { cursor: pointer; font-weight: 600; font-size: 16px; }
+    details p { color: var(--muted); margin: 10px 0 0; }
+
+    .final { text-align: center; background: var(--ink); color: #fff; }
+    .final h2 { font-size: clamp(30px, 4vw, 44px); }
+    .final p { color: #cfc6bb; font-size: 17px; margin: 14px auto 30px; max-width: 34em; }
+    footer { padding: 28px 0; font-size: 14px; color: var(--muted); border-top: 1px solid var(--line); }
+    footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space-between; }
+
+    @media (max-width: 960px) {
+      .grid { grid-template-columns: repeat(2, 1fr); }
+      .hero .wrap, .row { grid-template-columns: 1fr; gap: 36px; }
+      .row.flip > :first-child { order: 0; }
+      .hero-shot .plan { display: none; }
+      .steps { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      .wrap { padding: 0 16px; }
+      .links { display: none; }
+      nav .btn { margin-left: auto; }
+      .hero { padding-top: 44px; }
+      section { padding: 64px 0; }
+      .grid, .designs, .two { grid-template-columns: 1fr; }
+      .sheets { columns: 1; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="wrap">
+      <a class="logo" href="./">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 15L16 5l12 10" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 13v13h16V13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/><rect x="13.5" y="18" width="5" height="8" rx="1" fill="currentColor"/></svg>
+        HomeCraft
+      </a>
+      <div class="links">
+        <a href="#features">Features</a>
+        <a href="#drawings">Drawings</a>
+        <a href="#designs">Designs</a>
+        <a href="#faq">FAQ</a>
+      </div>
+      <a class="btn primary small" href="app.html">Open the app</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="wrap">
+      <div>
+        <span class="eyebrow">Free · No sign-up · Runs in your browser</span>
+        <h1>Design your dream home, then <em>hand the drawings to your mason.</em></h1>
+        <p class="lead">Place walls, rooms, stairs and porticos on a 2D plan with exact dimensions. Watch the house build itself in 3D, walk through it, and export an engineer-standard PDF drawing set.</p>
+        <div class="cta">
+          <a class="btn primary" href="app.html">Start designing →</a>
+          <a class="btn ghost" href="#designs">See sample houses</a>
+        </div>
+        <div class="chips"><span>2D plan + live 3D</span><span>Kerala architecture</span><span>PDF drawing set</span></div>
+      </div>
+      <div class="hero-shot">
+        <div class="frame"><div class="bar"><i></i><i></i><i></i></div>
+          <img src="assets/shots/kerala-traditional.jpg" width="1600" height="900" alt="3D view of a Kerala traditional house with a clay-tiled roof, sit-out and coconut palms, designed in HomeCraft">
+        </div>
+        <img class="plan" src="assets/shots/plan.png" width="1600" height="1100" alt="Dimensioned 2D floor plan of the same house">
+      </div>
+    </div>
+  </header>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-h"><h2>From idea to drawings in three steps</h2><p>You don't need CAD experience. If you can drag and drop, you can plan a house.</p></div>
+      <div class="steps">
+        <div class="step"><h3>Pick or draw</h3><p>Start from a ready-made design, or click a furnished room and drop it on the plan. Walls, door and fittings come with it.</p></div>
+        <div class="step"><h3>Shape it exactly</h3><p>Drag any wall or corner, or double-click a dimension and type the value. Lock the sizes that must not change.</p></div>
+        <div class="step"><h3>Walk it and export</h3><p>Walk through the house in 3D, then download a PDF set with plans, elevations, setting-out, schedules and quantities.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="features">
+    <div class="wrap">
+      <div class="sec-h"><h2>Everything an architect would reach for</h2><p>A full kit of elements, from the boundary wall to the pooja room.</p></div>
+      <div class="grid">
+        <div class="feat"><div class="ic">📐</div><h3>Real dimensions</h3><p>Metres, cm, mm or feet. Dimension chains, locks, and centre-line, outside or clear measuring.</p></div>
+        <div class="feat"><div class="ic">🏠</div><h3>Live 3D view</h3><p>Textured walls, roofs and sunlight that follows the time of day. Elevations with level markers.</p></div>
+        <div class="feat"><div class="ic">🛕</div><h3>Kerala architecture</h3><p>Mukhappu roofs, charupadi sit-outs, padippura gates, laterite walls, tulsi thara and open wells.</p></div>
+        <div class="feat"><div class="ic">🛋</div><h3>Furnished rooms</h3><p>Living, dining, kitchen, bedrooms, toilets, pooja room and work area, each with fittings.</p></div>
+        <div class="feat"><div class="ic">🪜</div><h3>Stairs that adapt</h3><p>Straight, L, U, winder and spiral. Steps re-flow as you resize, with a riser and tread check.</p></div>
+        <div class="feat"><div class="ic">〰️</div><h3>Any shape</h3><p>Curved walls, skewed and custom floors where every side is editable, and a raised plinth.</p></div>
+        <div class="feat"><div class="ic">🌴</div><h3>Garden & site</h3><p>Trees, palms, flower beds, swings, gates, compound walls, parking, solar and water tanks.</p></div>
+        <div class="feat"><div class="ic">🧑‍🔧</div><h3>Engineer mode</h3><p>Door and window tags, opening chains, schedules and checks for working drawings.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="drawings">
+    <div class="wrap">
+      <div class="row">
+        <div>
+          <h2>A drawing set your engineer can work from</h2>
+          <p>One click exports an A3 PDF with a title block on every sheet, at standard scales.</p>
+          <ul class="ticks sheets">
+            <li>Cover sheet & drawing index</li><li>Site plan</li><li>Floor plans for every storey</li><li>Setting-out plan for the mason</li>
+            <li>Front, rear and side elevations</li><li>3D views</li><li>Door, window & room schedules</li><li>Approximate quantities (BOQ)</li><li>Construction specifications</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/shots/plan.png" width="1600" height="1100" loading="lazy" alt="Floor plan with room sizes, door and window tags and dimension chains"></div>
+      </div>
+      <div class="row flip">
+        <div>
+          <h2>Elevations with real levels</h2>
+          <p>Orthographic front, rear and side views mark ground level, plinth, top of wall and ridge, so heights are clear before work starts.</p>
+          <ul class="ticks">
+            <li>Raise the house on a plinth; the portico gets steps automatically</li>
+            <li>Every elevation goes into the PDF</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/shots/elevation.jpg" width="1600" height="800" loading="lazy" alt="Front elevation with ground, plinth, wall-top and ridge levels"></div>
+      </div>
+      <div class="row">
+        <div>
+          <h2>Walk through it before you build it</h2>
+          <p>Press <b>Spectate</b> and walk your house as a character. It climbs stairs, pushes doors open and is stopped by walls and furniture, so you feel the real space.</p>
+          <ul class="ticks">
+            <li>Third-person or first-person view</li>
+            <li>An automatic guided tour of every room</li>
+            <li>Use your own VRM avatar</li>
+          </ul>
+        </div>
+        <div class="frame"><img src="assets/shots/kerala-contemporary.jpg" width="1600" height="900" loading="lazy" alt="Two-storey Kerala contemporary house in 3D"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="designs">
+    <div class="wrap">
+      <div class="sec-h"><h2>Start from a ready-made house</h2><p>Open the app and choose <b>Designs</b>. Every design is fully editable.</p></div>
+      <div class="designs">
+        <figure class="design frame"><img src="assets/shots/kerala-traditional.jpg" width="1600" height="900" loading="lazy" alt="Kerala traditional design"><figcaption><b>Kerala traditional</b><small>1 storey · 3 BHK · ~154 m² · mukhappu roof, pooja room, open well</small></figcaption></figure>
+        <figure class="design frame"><img src="assets/shots/kerala-contemporary.jpg" width="1600" height="900" loading="lazy" alt="Kerala contemporary design"><figcaption><b>Kerala contemporary</b><small>2 storeys · 3 BHK · ~230 m² · gable porch, balcony, carport</small></figcaption></figure>
+        <figure class="design frame"><img src="assets/shots/modern-villa.jpg" width="1600" height="900" loading="lazy" alt="Modern villa design"><figcaption><b>Modern villa</b><small>2 storeys · 3 BHK · ~250 m² · glass balcony, louvers, pool</small></figcaption></figure>
+        <figure class="design frame"><img src="assets/shots/colonial.jpg" width="1600" height="900" loading="lazy" alt="Colonial two-storey design"><figcaption><b>Colonial two-storey</b><small>2 storeys · 3 BHK · ~216 m² · classical portico, brick facade</small></figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-h"><h2>Made for both sides of the table</h2></div>
+      <div class="two">
+        <div class="aud"><h3>Home owners</h3><p>Plan the house you want and show it clearly.</p>
+          <ul class="ticks"><li>Drag-and-drop rooms with furniture</li><li>See it in 3D and walk inside</li><li>Try Kerala, modern or colonial styles</li></ul></div>
+        <div class="aud"><h3>Engineers & masons</h3><p>Get drawings you can price and set out from.</p>
+          <ul class="ticks"><li>Exact, lockable dimensions</li><li>Setting-out coordinates, arcs and radii</li><li>Schedules, BOQ and specifications</li></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="faq">
+    <div class="wrap" style="max-width: 800px">
+      <div class="sec-h"><h2>Questions</h2></div>
+      <details><summary>Is it free?</summary><p>Yes. There's no account, no sign-up and no payment. Open the app and start designing.</p></details>
+      <details><summary>Where is my project saved?</summary><p>It autosaves in your own browser on this device. Nothing is uploaded. Use <b>Save</b> to download a .json file you can back up, share, or open on another computer.</p></details>
+      <details><summary>Can I build straight from the PDF?</summary><p>The drawings are a strong starting point for your engineer and mason. The structural notes are typical practice only; a licensed structural engineer must check them before construction.</p></details>
+      <details><summary>Which device should I use?</summary><p>A laptop or desktop with a mouse works best. Use a recent Chrome, Edge, Firefox or Safari, and keep an internet connection for the 3D view and PDF export.</p></details>
+    </div>
+  </section>
+
+  <section class="final">
+    <div class="wrap">
+      <h2>Your house, drawn properly.</h2>
+      <p>Open HomeCraft and have your first room on the plan in under a minute.</p>
+      <a class="btn primary" href="app.html">Start designing →</a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap"><span>© HomeCraft</span><span>Drawings are for planning; get structural design verified by a licensed engineer.</span></div>
+  </footer>
+</body>
+</html>
