@@ -1322,6 +1322,13 @@ export class Plan2D {
     const [ax, ay] = this.w2s(g.x1, g.y1), [bx, by] = this.w2s(g.x2, g.y2), L = Math.hypot(bx - ax, by - ay);
     if (L < 1e-6) return;
     const ux = (bx - ax) / L, uy = (by - ay) / L, m = 14;
+    if (g.seg) {
+      // division marks: a short tick across the element, not an endless line
+      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = lw + 0.6;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.beginPath(); ctx.arc((ax + bx) / 2, (ay + by) / 2, 2.8, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); ctx.restore();
+      return;
+    }
     // clip the infinite line to the inset view rectangle (Liang-Barsky)
     let t0 = -1e6, t1 = 1e6;
     for (const [p, q] of [[-ux, ax - m], [ux, this.W - m - ax], [-uy, ay - m], [uy, this.H - m - ay]]) {

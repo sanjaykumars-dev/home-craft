@@ -1,7 +1,7 @@
 // App shell: palette, tools, properties panel, levels, shortcuts and wiring between 2D and 3D.
 import {
   store, on, emit, checkpoint, dropIfUnchanged, undo, redo, setDoc, newDoc, loadSaved, getObj, uid, removeObj,
-  wallsOn, openingsOf, wallLen, projectToSegment, projectToWall, toUnit, fromUnit, unitLabel, fmtLen, snapVal, DEG,
+  wallsOn, openingsOf, wallLen, wallPointAt, projectToSegment, projectToWall, toUnit, fromUnit, unitLabel, fmtLen, snapVal, DEG,
   setWallLength, setWallAngle, followJoints, fmtArea, UNITS, dims, DEFAULT_DIMS, isImperial, isDimLocked, openingTags,
 } from './state.js';
 import { CATALOG, CATALOG_INDEX, TYPES, ICONS, iconForObj, labelForObj, floorPoly, polyArea, setSideLength, inScope, objScope as objScopeOf } from './catalog.js';
@@ -210,6 +210,84 @@ function openGuideGrid() {
       h('p', { class: 'note' }, 'The start defaults to the top-left wall corner on this storey. All grid lines are locked when placed.'),
       h('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: build }, 'Place grid'))));
   fx.focus();
+}
+
+// ------------------------------------------------------------------ divide walls, boundary walls, fences, hedges and guides
+const LINEAR_TYPES = new Set(['boundary', 'fence', 'hedge']);
+// the two ends of something that can be divided (curved walls follow the arc)
+function divEnds(o) {
+  if (o.type === 'wall' || o.type === 'guide') return [[o.x1, o.y1], [o.x2, o.y2]];
+  if (LINEAR_TYPES.has(o.type)) { const r = ((o.rot || 0) * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r); return [[o.x - (c * o.w) / 2, o.y - (s * o.w) / 2], [o.x + (c * o.w) / 2, o.y + (s * o.w) / 2]]; }
+  return null;
+}
+const divPoint = (o, f) => {
+  if (o.type === 'wall' && o.bulge) { const q = wallPointAt(o, f * wallLen(o)); return [q.x, q.y, q.a]; }
+  const [a, b] = divEnds(o);
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, Math.atan2(b[1] - a[1], b[0] - a[0])];
+};
+let divideN = 2;
+// Mark N equal parts: a short locked guide across each division point and a dimension on every part.
+function markParts(o, n) {
+  checkpoint();
+  store.doc.objects = store.doc.objects.filter((x) => x.divisionOf !== o.id);
+  const half = o.type === 'wall' ? o.thickness / 2 + 0.6 : LINEAR_TYPES.has(o.type) ? (o.d || 0.2) / 2 + 0.6 : 0.6, off = half + 0.2;
+  for (let i = 1; i < n; i++) {
+    const [x, y, a] = divPoint(o, i / n), nx = -Math.sin(a), ny = Math.cos(a);
+    store.doc.objects.push({ id: uid(), type: 'guide', level: o.level, divisionOf: o.id, x1: +(x - nx * half).toFixed(4), y1: +(y - ny * half).toFixed(4), x2: +(x + nx * half).toFixed(4), y2: +(y + ny * half).toFixed(4), color: '#db2777', locked: true });
+  }
+  if (!(o.type === 'wall' && o.bulge)) for (let i = 0; i < n; i++) {
+    const [x1, y1, a] = divPoint(o, i / n), [x2, y2] = divPoint(o, (i + 1) / n), nx = -Math.sin(a), ny = Math.cos(a);
+    store.doc.objects.push({ id: uid(), type: 'dimension', level: o.level, divisionOf: o.id, x1, y1, x2, y2, offset: off * (nx * 0 + 1), color: '#db2777' });
+  }
+  emit('doc'); renderProps(true);
+  const L = o.type === 'wall' ? wallLen(o) : o.type === 'guide' ? Math.hypot(o.x2 - o.x1, o.y2 - o.y1) : o.w;
+  toast(`Marked ${n} equal parts of ${fmtLen(L / n)}`);
+}
+// Split into N equal pieces; doors and windows stay where they are, on the piece they fall in.
+function splitParts(o, n) {
+  if (o.locked) { toast('This element is locked — unlock it first', true); return; }
+  if (o.type === 'wall' && o.bulge) { toast('Curved walls can be marked but not split', true); return; }
+  checkpoint();
+  const pieces = [];
+  if (o.type === 'wall') {
+    const L = wallLen(o), seg = L / n, ops = openingsOf(o.id);
+    for (let i = 0; i < n; i++) {
+      const [x1, y1] = divPoint(o, i / n), [x2, y2] = divPoint(o, (i + 1) / n);
+      pieces.push({ ...structuredClone(o), id: uid(), x1: +x1.toFixed(4), y1: +y1.toFixed(4), x2: +x2.toFixed(4), y2: +y2.toFixed(4), lockDims: undefined });
+    }
+    for (const op of ops) {
+      const k = Math.min(n - 1, Math.floor(op.t / seg)), t = op.t - k * seg;
+      op.wallId = pieces[k].id; op.t = Math.max(op.width / 2, Math.min(seg - op.width / 2, t));
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const [x, y] = divPoint(o, (i + 0.5) / n);
+      pieces.push({ ...structuredClone(o), id: uid(), x: +x.toFixed(4), y: +y.toFixed(4), w: +(o.w / n).toFixed(4), lockDims: undefined });
+    }
+  }
+  const at = store.doc.objects.indexOf(o);
+  store.doc.objects.splice(at, 1, ...pieces);
+  store.doc.objects = store.doc.objects.filter((x) => x.divisionOf !== o.id);
+  // a locked guide across every joint, so the division stays visible and snappable
+  for (let i = 1; i < n; i++) {
+    const [x, y, a] = divPoint(o, i / n), nx = -Math.sin(a), ny = Math.cos(a);
+    store.doc.objects.push({ id: uid(), type: 'guide', level: o.level, divisionOf: pieces[0].id, x1: +(x - nx * 0.6).toFixed(4), y1: +(y - ny * 0.6).toFixed(4), x2: +(x + nx * 0.6).toFixed(4), y2: +(y + ny * 0.6).toFixed(4), color: '#db2777', locked: true });
+  }
+  store.selectedId = pieces[0].id;
+  emit('doc'); emit('selection');
+  toast(`Split into ${n} pieces of ${fmtLen((o.type === 'wall' ? wallLen(o) : o.w) / n)}`);
+}
+function divideSection(o) {
+  if (!divEnds(o) || o.wallId) return null;
+  const splittable = o.type !== 'guide', marked = store.doc.objects.some((x) => x.divisionOf === o.id);
+  return h('div', { class: 'psec' }, h('h4', {}, 'Divide'),
+    h('div', { class: 'row' }, h('label', {}, 'Equal parts'), h('div', { class: 'inp' },
+      h('input', { type: 'number', min: 2, max: 50, step: 1, value: divideN, onchange: (e) => { divideN = Math.max(2, Math.min(50, parseInt(e.target.value, 10) || 2)); } }))),
+    h('div', { class: 'actions' },
+      h('button', { class: 'primary', title: 'Equal-spaced marks with a dimension on every part; nothing is cut', onclick: () => markParts(o, divideN) }, '⋮ Mark parts'),
+      splittable ? h('button', { title: o.type === 'wall' ? 'Cut into separate walls; doors and windows stay where they are' : 'Cut into separate pieces', onclick: () => splitParts(o, divideN) }, '✂ Split') : null,
+      marked ? h('button', { onclick: () => { checkpoint(); store.doc.objects = store.doc.objects.filter((x) => x.divisionOf !== o.id); emit('doc'); renderProps(true); } }, 'Clear marks') : null),
+    h('p', { class: 'note' }, o.type === 'guide' ? 'Divides the guide between its two points.' : 'Marks add a locked guide at each division point and dimension every part, for setting out posts, piers or partitions.'));
 }
 
 // ------------------------------------------------------------------ lock / hide / layer order
@@ -477,6 +555,7 @@ function renderProps(force = false) {
     h('button', { onclick: () => rotateSelected(90), title: 'R' }, o.type === 'door' ? 'Flip swing' : o.wallId ? null : 'Rotate 90°'),
     h('button', { class: 'danger', onclick: deleteSelected, title: 'Delete' }, 'Delete'),
   ].filter((b) => b.textContent);
+  const divSec = divideSection(o);
   if (o.type === 'guide') {
     acts.unshift(h('button', { onclick: () => wallOnGuide(o, 'exterior'), title: 'Build an exterior wall between the two guide points' }, '🧱 Wall on guide'),
       h('button', { onclick: () => wallOnGuide(o, 'interior') }, 'Interior wall on guide'),
@@ -494,6 +573,7 @@ function renderProps(force = false) {
     } }, '+ Add corner'));
   }
   panel.append(h('div', { class: 'psec' }, h('h4', {}, 'Actions'), h('div', { class: 'actions' }, acts)));
+  if (divSec) panel.append(divSec);
   panel.append(h('div', { class: 'psec' }, h('h4', {}, 'Arrange'), h('div', { class: 'actions' },
     h('button', { onclick: () => setFlag(o, 'locked', !o.locked), class: o.locked ? 'on' : '' }, o.locked ? '🔒 Locked' : '🔓 Lock'),
     h('button', { onclick: () => setFlag(o, 'hidden', !o.hidden), class: o.hidden ? 'on' : '' }, o.hidden ? '🙈 Hidden' : '👁 Hide'),
@@ -630,24 +710,38 @@ function renderPlot(panel) {
 }
 
 // Divide the plot into equal parts (family partition, two houses on one plot …): areas plus the cut lines.
-const division = { n: 2, side: null, open: false };
+const division = { n: 2, side: null, open: false, what: 'plot' };
 function divideBox(p) {
   const n = p.pts.length, L = (i) => String.fromCharCode(65 + (i % n)), side = division.side ?? alignSide(p);
   const COLORS = ['#7c3aed', '#0891b2', '#ea580c', '#16a34a', '#db2777', '#ca8a04'];
   const has = store.doc.objects.some((o) => o.division);
+  const sb = setbackPoly(p);
+  if (!sb && division.what === 'setback') division.what = 'plot';
   const run = () => {
-    const { parts, lines } = dividePlot(p, division.n, side);
+    let target = p, k = side;
+    if (division.what === 'setback' && sb) {
+      // the buildable area: cut parallel to its side that runs most nearly along the chosen plot side
+      const a = p.pts[side], b = p.pts[(side + 1) % n], ang = Math.atan2(b[1] - a[1], b[0] - a[0]);
+      k = sb.map((q, i) => { const r = sb[(i + 1) % sb.length]; return Math.abs(Math.cos(Math.atan2(r[1] - q[1], r[0] - q[0]) - ang)); }).reduce((bi, v, i, arr) => (v > arr[bi] ? i : bi), 0);
+      target = { pts: sb };
+    }
+    const { parts, lines } = dividePlot(target, division.n, k);
     checkpoint();
     store.doc.objects = store.doc.objects.filter((o) => !o.division);
     parts.forEach((pts, i) => store.doc.objects.push({ id: uid(), type: 'area', level: 0, division: true, label: `Part ${i + 1} of ${division.n}`, color: COLORS[i % COLORS.length], pts: pts.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)]) }));
-    for (const [a, b] of lines) store.doc.objects.push({ id: uid(), type: 'dimension', level: 0, division: true, x1: a[0], y1: a[1], x2: b[0], y2: b[1], offset: 0, color: '#b91c1c' });
+    for (const [a, b] of lines) {
+      store.doc.objects.push({ id: uid(), type: 'dimension', level: 0, division: true, x1: a[0], y1: a[1], x2: b[0], y2: b[1], offset: 0, color: '#b91c1c' });
+      store.doc.objects.push({ id: uid(), type: 'guide', level: 0, division: true, x1: +a[0].toFixed(4), y1: +a[1].toFixed(4), x2: +b[0].toFixed(4), y2: +b[1].toFixed(4), color: '#db2777', locked: true });
+    }
     emit('doc'); renderProps(true);
     const each = polyArea(parts[0]);
-    toast(`Divided into ${division.n} equal parts of ${(each / CENT).toFixed(3)} cents (${each.toFixed(2)} m²) each`);
+    toast(`${division.what === 'setback' ? 'Buildable area' : 'Plot'} divided into ${division.n} equal parts of ${(each / CENT).toFixed(3)} cents (${each.toFixed(2)} m²) each`);
   };
   return h('details', { class: 'survey', open: division.open, ontoggle: (e) => { division.open = e.target.open; } },
     h('summary', {}, '✂ Divide into equal parts'),
     h('p', { class: 'note' }, 'For a family partition or two houses on one plot: every part gets exactly the same area, with straight cuts you can set out on site.'),
+    h('div', { class: 'row' }, h('label', {}, 'Divide'), h('select', { onchange: (e) => { division.what = e.target.value; } },
+      [['plot', 'Whole plot'], ['setback', 'Buildable area (inside setbacks)']].map(([v, l]) => h('option', { value: v, selected: division.what === v, disabled: v === 'setback' && !sb }, l)))),
     h('div', { class: 'row' }, h('label', {}, 'Parts'), h('select', { onchange: (e) => { division.n = +e.target.value; } }, [2, 3, 4, 5, 6].map((k) => h('option', { value: k, selected: division.n === k }, k === 2 ? '2 (halves)' : String(k))))),
     h('div', { class: 'row' }, h('label', {}, 'Cuts parallel to'), h('select', { onchange: (e) => { division.side = +e.target.value; } }, p.pts.map((_, i) => h('option', { value: i, selected: side === i }, `${L(i)}–${L(i + 1)}`)))),
     h('div', { class: 'actions' }, h('button', { class: 'primary', onclick: run }, has ? 'Divide again' : 'Divide plot'),
