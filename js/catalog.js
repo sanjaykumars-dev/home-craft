@@ -1166,7 +1166,7 @@ const OUTDOOR_TYPES = new Set(['ramp', 'steps', 'paving', 'tree', 'shrub', 'gate
   'swing', 'fountain', 'rocks', 'portico', 'pergola', 'well', 'septic', 'sitout', 'roof', 'balcony', 'cladding', 'louvers', 'frame', 'chimney', 'solar', 'watertank', 'acunit']);
 // 'outdoor', 'indoor' or 'structure' (walls, openings, dimensions — editable in both)
 export function objScope(o) {
-  if (o.type === 'wall' || o.wallId || o.type === 'dimension' || o.type === 'guide') return 'structure';
+  if (o.type === 'wall' || o.wallId || o.type === 'dimension' || o.type === 'guide' || o.type === 'area') return 'structure';
   if (o.type === 'floor') return 'structure';
   return OUTDOOR_TYPES.has(o.type) ? 'outdoor' : 'indoor';
 }
@@ -1183,6 +1183,7 @@ export function iconForObj(o) {
   if (map[o.type]) return ICONS[map[o.type][o.style]] || ICONS.portico;
   if (o.type === 'dimension') return ICONS.measure;
   if (o.type === 'guide') return ICONS.guide;
+  if (o.type === 'area') return ICONS.floorHex;
   if (o.type === 'roof') return ICONS[{ gable: 'roofGable', hip: 'roofHip', flat: 'roofFlat' }[o.style]];
   if (o.type === 'floor' && o.shape && o.shape !== 'rect') return ICONS[{ lshape: 'floorL', ushape: 'floorL', parallelogram: 'floorSkew', trapezoid: 'floorSkew' }[o.shape] || 'floorHex'];
   if (o.type === 'paving') return o.slope ? ICONS.ramp : o.finish === 'asphalt' ? ICONS.driveway : ICONS.path;
@@ -1197,6 +1198,7 @@ export function labelForObj(o) {
   }
   if (o.type === 'wall') return o.kind === 'interior' ? 'Interior wall' : 'Exterior wall';
   if (o.type === 'guide') return o.label ? `Guide ${o.label}` : 'Guide line';
+  if (o.type === 'area') return o.label ? `Area · ${o.label}` : 'Measured area';
   if (o.type === 'roof') return { gable: 'Gable roof', hip: 'Hip roof', flat: 'Flat roof' }[o.style];
   if (o.type === 'paving') return o.slope ? 'Ramp' : { asphalt: 'Driveway', grass: 'Lawn patch' }[o.finish] || 'Paving';
   if (o.type === 'floor' && o.name) return `Floor · ${o.name}`;
@@ -1265,6 +1267,17 @@ TYPES.guide = {
     num('angle', 'Angle °', { get: (o) => ((Math.round((-Math.atan2(o.y2 - o.y1, o.x2 - o.x1) * 180) / Math.PI * 100) / 100) + 360) % 360, set: 'guideAngle', step: 1 }),
     text('label', 'Grid label'),
     select('color', 'Colour', [['#0891b2', 'Cyan'], ['#db2777', 'Magenta'], ['#ea580c', 'Orange'], ['#16a34a', 'Green'], ['#7c3aed', 'Violet']]),
+  ],
+};
+
+// A measured area (from the Measure tool or a plot division): a polygon in plan metres with its area shown.
+TYPES.area = {
+  label: 'Measured area', kind: 'area',
+  props: [
+    text('label', 'Name'),
+    { key: 'areaInfo', label: 'Area', kind: 'info', get: (o) => { const a = polyArea(o.pts); return `${a.toFixed(2)} m² · ${Math.round(a * 10.7639)} ft² · ${(a / 40.4686).toFixed(3)} cents`; } },
+    { key: 'perimInfo', label: 'Perimeter', kind: 'info', get: (o) => `${o.pts.reduce((s, p, i) => { const q = o.pts[(i + 1) % o.pts.length]; return s + Math.hypot(q[0] - p[0], q[1] - p[1]); }, 0).toFixed(2)} m` },
+    select('color', 'Colour', [['#7c3aed', 'Violet'], ['#0891b2', 'Cyan'], ['#ea580c', 'Orange'], ['#16a34a', 'Green'], ['#db2777', 'Pink'], ['#ca8a04', 'Gold']]),
   ],
 };
 

@@ -2,7 +2,7 @@
 import {
   store, emit, checkpoint, dropIfUnchanged, wallsOn, openingsOf, wallLen, wallAng, projectToSegment, projectToWall, wallArc, wallPointAt, wallSamples,
   toLocal, toWorld, levelCentroid, outwardSign, fmtLen, snapVal, fromUnit, toUnit, DEG, FT, uid,
-  dims, wallDimLen, setWallLength, fmtArea, getObj, openingTags, isDimLocked,
+  dims, wallDimLen, setWallLength, fmtArea, fmtAreaAll, getObj, openingTags, isDimLocked,
 } from './state.js';
 import { plotOf, setbackPoly, setSide, plotEditBlock, CENT, SQFT } from './plot.js';
 import { TYPES, CATALOG_INDEX, drawOpening2D, floorPoly, polyArea, pointInPoly, normalizeCustom, setSideLength, ROOM_PRESETS, inScope, presetItems } from './catalog.js';
@@ -58,6 +58,7 @@ export class Plan2D {
     canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     canvas.addEventListener('dblclick', (e) => {
       if (store.tool === 'wall') { this.finishDraft(); return; }
+      if (store.tool === 'measure') { if (this.mchain) { this.mchain.pts.pop(); this.mchain.done = true; this.redraw(); } return; }
       const p = this.evPos(e);
       const hv = this.hitHandle(p);
       if (hv?.mode === 'vertex' && hv.o.pts.length > 3) {
@@ -85,6 +86,9 @@ export class Plan2D {
       this.alignMarks = [];
       if (key) this.app.placeAt(key, p.x, p.y);
     });
+    const alt = (e) => { if (e.key === 'Alt') { if (this.altDown !== (e.type === 'keydown')) { this.altDown = e.type === 'keydown'; this.redraw(); } e.preventDefault(); } };
+    window.addEventListener('keydown', alt); window.addEventListener('keyup', alt);
+    window.addEventListener('blur', () => { this.altDown = false; this.redraw(); });
     const loop = () => { if (this.dirty) { this.dirty = false; this.draw(); } requestAnimationFrame(loop); };
     loop();
   }
@@ -142,6 +146,7 @@ export class Plan2D {
     }
     const plot = plotOf(store.doc);
     if (plot) for (const [x, y] of plot.pts) add(x, y);
+    for (const o of store.doc.objects) if (o.type === 'area' && (all || o.level === store.level)) for (const [x, y] of o.pts) add(x, y);
     return x0 === Infinity ? null : { x0, y0, x1, y1 };
   }
   fit() {
@@ -207,7 +212,8 @@ export class Plan2D {
     const ep = this.findEndpoint(p, excludeId);
     if (ep) { this.snapMark = ep; return { ...ep }; }
     if (store.tool === 'measure' || store.tool === 'dimension') {
-      const from = store.tool === 'measure' ? this.measure?.a : this.dimDraft;
+      const mp = this.mchain && !this.mchain.done && !this.mchain.closed ? this.mchain.pts[this.mchain.pts.length - 1] : null;
+      const from = store.tool === 'measure' ? mp : this.dimDraft;
       const f = this.snapFace(p, from);
       if (f) { this.snapMark = f; this.snapLine = f; return { x: f.x, y: f.y }; }
     }
@@ -281,7 +287,7 @@ export class Plan2D {
     const tol = 7 / this.scale, pts = [];
     for (const w of wallsOn(store.level)) pts.push([w.x1, w.y1], [w.x2, w.y2]);
     if (this.draft) for (const q of this.draft.pts) pts.push([q.x, q.y]);
-    for (const q of [this.measure?.a, this.dimDraft, this.guideDraft]) if (q) pts.push([q.x, q.y]);
+    for (const q of [...(this.mchain?.pts || []), this.dimDraft, this.guideDraft]) if (q) pts.push([q.x, q.y]);
     let ax = null, ay = null;
     for (const [x, y] of pts) {
       const dx = Math.abs(p.x - x), dy = Math.abs(p.y - y);
@@ -346,6 +352,99 @@ export class Plan2D {
     const x = al.x ? al.x.v : snapVal(p.x), y = al.y ? al.y.v : snapVal(p.y);
     this.alignMarks = [al.x && { from: al.x.from, to: [x, y] }, al.y && { from: al.y.from, to: [x, y] }].filter(Boolean);
     return { x, y };
+  }
+  // The named room (or the plot) under a point, as a world polygon.
+  areaUnder(p) {
+    const floors = store.doc.objects.filter((o) => o.type === 'floor' && o.level === store.level && !o.hidden && o.name);
+    for (const o of floors) {
+      const [lx, ly] = toLocal(o, p.x, p.y);
+      if (pointInPoly(lx, ly, floorPoly(o))) return { name: o.name, pts: floorPoly(o).map(([x, y]) => toWorld(o, x, y)) };
+    }
+    const plot = plotOf(store.doc);
+    if (plot && store.level === 0 && pointInPoly(p.x, p.y, plot.pts)) return { name: 'Plot', pts: plot.pts };
+    return null;
+  }
+  // Enter: a closed measurement becomes an area on the plan; an open one becomes dimension lines.
+  keepMeasure() {
+    const m = this.mchain;
+    if (!m || m.pts.length < 2) return;
+    checkpoint();
+    if (m.closed && m.pts.length >= 3) {
+      const o = { id: uid(), type: 'area', level: store.level, pts: m.pts.map((q) => [+q.x.toFixed(4), +q.y.toFixed(4)]), label: '', color: '#7c3aed' };
+      store.doc.objects.push(o); store.selectedId = o.id;
+      this.app.toast(`Area kept on the plan: ${fmtAreaAll(polyArea(o.pts))}`);
+    } else {
+      for (let i = 0; i < m.pts.length - 1; i++) store.doc.objects.push({ id: uid(), type: 'dimension', level: store.level, x1: m.pts[i].x, y1: m.pts[i].y, x2: m.pts[i + 1].x, y2: m.pts[i + 1].y, offset: 0.4, color: '#c2410c' });
+      this.app.toast(`${m.pts.length - 1} dimension line${m.pts.length > 2 ? 's' : ''} added`);
+    }
+    this.mchain = null;
+    emit('doc'); emit('selection');
+  }
+  // Ray from a point to the nearest wall (or boundary) face; distance or Infinity.
+  rayToWall(x, y, dx, dy, skip) {
+    let best = Infinity;
+    const hitSeg = (ax, ay, bx, by) => {
+      const ex = bx - ax, ey = by - ay, den = dx * ey - dy * ex;
+      if (Math.abs(den) < 1e-12) return;
+      const t = ((ax - x) * ey - (ay - y) * ex) / den, u = ((ax - x) * dy - (ay - y) * dx) / den;
+      if (t > 1e-4 && u >= 0 && u <= 1 && t < best) best = t;
+    };
+    for (const o of store.doc.objects) {
+      if (o.level !== store.level || o.hidden || o.id === skip) continue;
+      let poly = null;
+      if (o.type === 'wall') poly = this.wallPoly(o);
+      else if (o.type === 'boundary' || o.type === 'fence') poly = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => toWorld(o, (sx * o.w) / 2, (sy * o.d) / 2));
+      if (!poly) continue;
+      for (let i = 0; i < poly.length; i++) hitSeg(...poly[i], ...poly[(i + 1) % poly.length]);
+    }
+    return best;
+  }
+  // Red distance line with its length, like Figma's Alt measurements.
+  gapLine(x1, y1, x2, y2, label) {
+    const { ctx } = this;
+    this.screenT();
+    const [a, b] = this.w2s(x1, y1), [c, d] = this.w2s(x2, y2), L = Math.hypot(c - a, d - b);
+    if (L < 2) return;
+    const ux = (c - a) / L, uy = (d - b) / L;
+    ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d);
+    for (const [x, y] of [[a, b], [c, d]]) { ctx.moveTo(x - uy * 5, y + ux * 5); ctx.lineTo(x + uy * 5, y - ux * 5); }
+    ctx.stroke();
+    ctx.font = '700 11px Inter, system-ui, sans-serif';
+    const tw = ctx.measureText(label).width + 10, mx = (a + c) / 2, my = (b + d) / 2;
+    ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.roundRect(mx - tw / 2, my - 9, tw, 18, 4); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, mx, my + 0.5);
+  }
+  // Distances from a box to the nearest wall on all four sides.
+  drawClearances(b, skip) {
+    const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+    for (const [x, y, dx, dy] of [[b.x1, cy, 1, 0], [b.x0, cy, -1, 0], [cx, b.y1, 0, 1], [cx, b.y0, 0, -1]]) {
+      const t = this.rayToWall(x, y, dx, dy, skip);
+      if (t < 40) this.gapLine(x, y, x + dx * t, y + dy * t, fmtLen(t));
+    }
+  }
+  // Distances between two boxes: the gap between them, or how far one sits inside the other.
+  drawGaps(a, b) {
+    const ov = (a0, a1, b0, b1) => Math.min(a1, b1) - Math.max(a0, b0);
+    const yMid = ov(a.y0, a.y1, b.y0, b.y1) > 0 ? (Math.max(a.y0, b.y0) + Math.min(a.y1, b.y1)) / 2 : (a.y0 + a.y1) / 2;
+    const xMid = ov(a.x0, a.x1, b.x0, b.x1) > 0 ? (Math.max(a.x0, b.x0) + Math.min(a.x1, b.x1)) / 2 : (a.x0 + a.x1) / 2;
+    if (a.x1 <= b.x0) this.gapLine(a.x1, yMid, b.x0, yMid, fmtLen(b.x0 - a.x1));
+    else if (b.x1 <= a.x0) this.gapLine(b.x1, yMid, a.x0, yMid, fmtLen(a.x0 - b.x1));
+    else { // overlapping across: the insets on each side
+      if (Math.abs(a.x0 - b.x0) > 0.005) this.gapLine(Math.min(a.x0, b.x0), yMid, Math.max(a.x0, b.x0), yMid, fmtLen(Math.abs(a.x0 - b.x0)));
+      if (Math.abs(a.x1 - b.x1) > 0.005) this.gapLine(Math.min(a.x1, b.x1), yMid, Math.max(a.x1, b.x1), yMid, fmtLen(Math.abs(a.x1 - b.x1)));
+    }
+    if (a.y1 <= b.y0) this.gapLine(xMid, a.y1, xMid, b.y0, fmtLen(b.y0 - a.y1));
+    else if (b.y1 <= a.y0) this.gapLine(xMid, b.y1, xMid, a.y0, fmtLen(a.y0 - b.y1));
+    else {
+      if (Math.abs(a.y0 - b.y0) > 0.005) this.gapLine(xMid, Math.min(a.y0, b.y0), xMid, Math.max(a.y0, b.y0), fmtLen(Math.abs(a.y0 - b.y0)));
+      if (Math.abs(a.y1 - b.y1) > 0.005) this.gapLine(xMid, Math.min(a.y1, b.y1), xMid, Math.max(a.y1, b.y1), fmtLen(Math.abs(a.y1 - b.y1)));
+    }
+  }
+  boxOf(o) {
+    if (o.type === 'area') return { x0: Math.min(...o.pts.map((q) => q[0])), x1: Math.max(...o.pts.map((q) => q[0])), y0: Math.min(...o.pts.map((q) => q[1])), y1: Math.max(...o.pts.map((q) => q[1])) };
+    if (o.wallId || o.type === 'dimension' || o.type === 'guide') return null;
+    if (o.type === 'wall') return this.aabb(o, o.x1, o.y1);
+    return o.w ? this.aabb(o) : null;
   }
   // Where a palette item would land: its edges or centre lined up with what is already there, else the grid.
   placePoint(key, p) {
@@ -418,6 +517,10 @@ export class Plan2D {
     const o = this.app.selected();
     if (!o || o.level !== store.level || o.locked || o.hidden) return null;
     const near = (x, y) => { const [sx, sy] = this.w2s(x, y); return Math.hypot(sx - p.sx, sy - p.sy) < HANDLE; };
+    if (o.type === 'area') {
+      const i = o.pts.findIndex(([x, y]) => near(x, y));
+      return i >= 0 ? { mode: 'areaVertex', o, i } : null;
+    }
     if (o.type === 'wall' || o.type === 'dimension' || o.type === 'guide') {
       const link = (x, y) => (o.type === 'wall' ? this.linkedAt(x, y, o.id) : []);
       if (o.type === 'wall') {
@@ -461,6 +564,7 @@ export class Plan2D {
     }
     for (const w of walls) if (projectToWall(p.x, p.y, w).d <= w.thickness / 2 + tol) return w;
     if (store.view.guides !== false) for (const g of objs) if (g.type === 'guide' && projLine(p.x, p.y, g).d < 5 / this.scale) return g;
+    for (const a of objs) if (a.type === 'area' && a.pts.some((q, i) => { const r = a.pts[(i + 1) % a.pts.length]; return projectToSegment(p.x, p.y, q[0], q[1], r[0], r[1]).d < 5 / this.scale; })) return a;
     const items = objs.filter((o) => TYPES[o.type]?.kind === 'rect').sort((a, b) => zOrder(b) - zOrder(a));
     for (const o of items) {
       const hit = TYPES[o.type].hit;
@@ -474,6 +578,7 @@ export class Plan2D {
       }
       if (Math.abs(lx) <= o.w / 2 + tol && Math.abs(ly) <= Math.max(o.d / 2, 0.1) + tol) return o;
     }
+    for (const a of objs) if (a.type === 'area' && pointInPoly(p.x, p.y, a.pts)) return a;
     for (const o of items) {
       if (TYPES[o.type].hit !== 'low') continue;
       const [lx, ly] = toLocal(o, p.x, p.y);
@@ -535,9 +640,15 @@ export class Plan2D {
         return;
       }
       case 'measure': {
-        const a = this.snapPoint(p);
-        this.measure = { a, b: a };
-        this.drag = { mode: 'measure' };
+        const pt = this.snapPoint(p), m = this.mchain;
+        if (!m || m.done || m.closed) this.mchain = { pts: [pt] };
+        else {
+          const [fx, fy] = this.w2s(m.pts[0].x, m.pts[0].y);
+          if (m.pts.length >= 3 && Math.hypot(fx - p.sx, fy - p.sy) < 10) m.closed = true; // back on the first point: an area
+          else if (Math.hypot(pt.x - m.pts[m.pts.length - 1].x, pt.y - m.pts[m.pts.length - 1].y) > 0.005) m.pts.push(pt);
+        }
+        this.drag = { mode: 'measure', sx: p.sx, sy: p.sy };
+        this.redraw();
         return;
       }
       case 'guide': {
@@ -583,6 +694,7 @@ export class Plan2D {
           this.drag = { mode: 'moveWall', o: hit, start: p, orig: { x1: hit.x1, y1: hit.y1, x2: hit.x2, y2: hit.y2 },
             linked: hit.type === 'wall' && !copied ? [...this.linkedAt(hit.x1, hit.y1, hit.id), ...this.linkedAt(hit.x2, hit.y2, hit.id)] : [] };
         } else if (hit.wallId) this.drag = { mode: 'moveOpening', o: hit };
+        else if (hit.type === 'area') this.drag = { mode: 'moveArea', o: hit, start: p, orig: hit.pts.map((q) => [...q]) };
         else this.drag = { mode: 'move', o: hit, start: p, ox: hit.x, oy: hit.y };
       }
     }
@@ -605,6 +717,11 @@ export class Plan2D {
         this.c.style.cursor = h ? (h.mode === 'rotate' ? 'alias' : h.mode === 'linEnd' || h.mode === 'endpoint' ? 'crosshair' : 'nwse-resize') : hit ? (e.altKey ? 'copy' : 'move') : 'default';
       } else this.c.style.cursor = 'crosshair';
       if (store.tool === 'place') this.placePoint(store.armed, p);
+      if (store.tool === 'measure') {
+        this.preview = this.snapPoint(p);
+        // no chain going: hovering a room or the plot shows its area
+        this.hoverArea = !this.mchain || this.mchain.done || this.mchain.closed ? this.areaUnder(p) : null;
+      }
       if (store.tool === 'wall') this.preview = this.snapWallPoint(p);
       else if (store.tool === 'guide') this.preview = this.guidePoint(p);
       else if (store.tool !== 'select') this.snapPoint(p);
@@ -686,6 +803,12 @@ export class Plan2D {
         emit('doc');
         break;
       }
+      case 'areaVertex': { const pt = this.snapPoint(p, d.o.id); d.o.pts[d.i] = [+pt.x.toFixed(4), +pt.y.toFixed(4)]; emit('doc'); break; }
+      case 'moveArea': {
+        let dx = p.x - d.start.x, dy = p.y - d.start.y;
+        if (snap) { dx = snapVal(dx); dy = snapVal(dy); }
+        d.o.pts = d.orig.map(([x, y]) => [+(x + dx).toFixed(4), +(y + dy).toFixed(4)]); emit('doc'); break;
+      }
       case 'linEnd': {
         // the other end stays where it is; length and angle follow the pointer (15° steps, Shift = free)
         const [fx, fy] = d.fixed;
@@ -712,7 +835,7 @@ export class Plan2D {
       }
       case 'room': case 'stairdraw': d.b = this.snapPoint(p); break;
       case 'plotCorner': { const pt = this.snapPoint(p); d.plot.pts[d.i] = [+pt.x.toFixed(4), +pt.y.toFixed(4)]; emit('doc'); break; }
-      case 'measure': this.measure.b = this.snapPoint(p); break;
+      case 'measure': this.preview = this.snapPoint(p); break;
     }
     this.redraw();
   }
@@ -722,10 +845,14 @@ export class Plan2D {
     this.drag = null;
     this.c.style.cursor = store.tool === 'select' ? 'default' : 'crosshair';
     if (!d) return;
+    if (d.mode === 'measure' && this.mchain && !this.mchain.closed && Math.hypot(this.mouse.sx - d.sx, this.mouse.sy - d.sy) > 8) {
+      // dragged: measure from where the press started to here
+      const pt = this.preview || this.mouse; this.mchain.pts.push({ x: pt.x, y: pt.y }); this.mchain.done = true;
+    }
     if (d.mode === 'room') this.createRoom(d.a, d.b);
     if (d.mode === 'stairdraw') this.createStairs(d.a, d.b);
     if (d.mode === 'vertex') normalizeCustom(d.o);
-    if (['move', 'moveWall', 'endpoint', 'moveOpening', 'resize', 'rotate', 'vertex', 'bend', 'plotCorner', 'linEnd'].includes(d.mode)) { dropIfUnchanged(); emit('doc'); }
+    if (['move', 'moveWall', 'endpoint', 'moveOpening', 'resize', 'rotate', 'vertex', 'bend', 'plotCorner', 'linEnd', 'areaVertex', 'moveArea'].includes(d.mode)) { dropIfUnchanged(); emit('doc'); }
     this.alignMarks = [];
     this.redraw();
   }
@@ -751,7 +878,12 @@ export class Plan2D {
       }
       if (e.key === 'Escape') { this.finishDraft(); return true; }
     }
-    if (e.key === 'Escape' && (this.measure || this.dimDraft || this.guideDraft || this.drag?.mode === 'room')) { this.measure = null; this.dimDraft = null; this.guideDraft = null; this.drag = null; this.redraw(); return true; }
+    if (store.tool === 'measure' && this.mchain && e.type === 'keydown') {
+      if (e.key === 'Enter') { this.keepMeasure(); return true; }
+      if (e.key === 'Backspace') { this.mchain.pts.pop(); this.mchain.closed = false; this.mchain.done = false; if (!this.mchain.pts.length) this.mchain = null; this.redraw(); return true; }
+      if (e.key.toLowerCase() === 'c' && this.mchain.pts.length >= 3) { this.mchain.closed = true; this.redraw(); return true; }
+    }
+    if (e.key === 'Escape' && (this.mchain || this.dimDraft || this.guideDraft || this.drag?.mode === 'room')) { this.mchain = null; this.dimDraft = null; this.guideDraft = null; this.drag = null; this.redraw(); return true; }
     if (e.key === ' ') { this.space = e.type === 'keydown'; return false; }
     return false;
   }
@@ -1066,6 +1198,7 @@ export class Plan2D {
     if (ghost) return;
     if (store.view.pro || this.print) this.drawTags(objs.filter((o) => o.type === 'wall'));
     for (const o of objs) if (o.type === 'dimension') this.drawDimObj(o);
+    for (const o of objs) if (o.type === 'area') this.drawArea(o);
   }
 
   // Room labels: name, size and area at the centre of each floor slab.
@@ -1112,6 +1245,18 @@ export class Plan2D {
     }
   }
 
+  drawArea(o) {
+    const { ctx } = this, c = o.color || '#7c3aed', pts = o.pts.map(([x, y]) => this.w2s(x, y));
+    this.screenT(); ctx.save();
+    ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath();
+    ctx.globalAlpha = 0.1; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]); ctx.stroke(); ctx.setLineDash([]);
+    const a = polyArea(o.pts), cx = pts.reduce((s, q) => s + q[0], 0) / pts.length, cy = pts.reduce((s, q) => s + q[1], 0) / pts.length;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = c;
+    if (o.label) { ctx.font = '700 12px Inter, system-ui, sans-serif'; ctx.fillText(o.label, cx, cy - 9); }
+    ctx.font = '600 11px Inter, system-ui, sans-serif'; ctx.fillText(fmtArea(a, 'all'), cx, cy + (o.label ? 7 : 0));
+    ctx.restore();
+  }
   drawDimObj(o) {
     const [a, b] = this.dimPoints(o), { ctx } = this;
     this.screenT();
@@ -1326,6 +1471,7 @@ export class Plan2D {
   outlineObj(o, color, lw) {
     const { ctx } = this;
     if (o.type === 'guide') { this.drawGuide(o, color === ACCENT ? o.color || GUIDE : color, lw); return; }
+    if (o.type === 'area') { this.screenT(); ctx.save(); ctx.beginPath(); o.pts.forEach(([x, y], i) => { const [sx, sy] = this.w2s(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); }); ctx.closePath(); ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.stroke(); ctx.restore(); return; }
     if (o.type === 'wall') {
       ctx.save(); this.worldT(); this.pathPoly(this.wallPoly(o));
       ctx.strokeStyle = color; ctx.lineWidth = lw / this.scale; ctx.stroke(); ctx.restore();
@@ -1355,6 +1501,12 @@ export class Plan2D {
     }
     if (!sel || sel.level !== store.level) return;
     this.outlineObj(sel, ACCENT, 2.2);
+    if (sel.type === 'area' || (sel.type === 'floor' && !sel.z) || sel.type === 'floor') {
+      const pts = sel.type === 'area' ? sel.pts : floorPoly(sel).map(([x, y]) => toWorld(sel, x, y)), b = this.boxOf(sel);
+      if (b) { this.screenT(); const ys = pts.map(([x, y]) => this.w2s(x, y)), sx = ys.reduce((s, q) => s + q[0], 0) / ys.length, sy = Math.max(...ys.map((q) => q[1]));
+        this.badge(sx - 70, sy + 10, fmtAreaAll(polyArea(pts)), ACCENT); }
+    }
+    if (sel.type === 'area') { if (!sel.locked) for (const [x, y] of sel.pts) this.handle(x, y, true); return; }
     const px = 1 / this.scale;
     if (sel.type === 'wall' || sel.type === 'dimension' || sel.type === 'guide') {
       if (sel.type === 'guide' && (sel.locked || store.view.guides === false)) return;
@@ -1532,20 +1684,56 @@ export class Plan2D {
       const [cx, cy] = this.w2s((x0 + x1) / 2, (y0 + y1) / 2);
       this.badge(cx - 30, cy - 10, store.doc.units === 'ft' ? `${(area * 10.7639).toFixed(0)} ft²` : `${area.toFixed(1)} m²`);
     }
-    // measure
-    if (this.measure) {
-      const { a, b } = this.measure;
-      this.screenT();
-      const [x1, y1] = this.w2s(a.x, a.y), [x2, y2] = this.w2s(b.x, b.y);
-      ctx.strokeStyle = '#c2410c'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
-      for (const [x, y] of [[x1, y1], [x2, y2]]) { ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fillStyle = '#c2410c'; ctx.fill(); }
-      const L = Math.hypot(b.x - a.x, b.y - a.y);
-      if (L > 0.01) {
-        let deg = Math.round(-Math.atan2(b.y - a.y, b.x - a.x) / DEG); if (deg < 0) deg += 360;
-        const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y), axis = dx < 0.005 || dy < 0.005;
-        this.badge((x1 + x2) / 2 + 10, (y1 + y2) / 2 - 24, `📏 ${fmtLen(L)}` + (axis ? '' : `  ·  ΔX ${fmtLen(dx)}  ΔY ${fmtLen(dy)}  ·  ${deg}°`), '#c2410c');
+    // measuring: hovered room / plot area
+    if (store.tool === 'measure' && this.hoverArea && this.mouse.inside) {
+      const ha = this.hoverArea, a = polyArea(ha.pts), per = ha.pts.reduce((s, q, i) => { const r = ha.pts[(i + 1) % ha.pts.length]; return s + Math.hypot(r[0] - q[0], r[1] - q[1]); }, 0);
+      this.screenT(); ctx.save();
+      ctx.beginPath(); ha.pts.forEach(([x, y], i) => { const [sx, sy] = this.w2s(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); }); ctx.closePath();
+      ctx.fillStyle = 'rgba(194,65,12,.08)'; ctx.fill(); ctx.strokeStyle = '#c2410c'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+      const [sx, sy] = this.w2s(this.mouse.x, this.mouse.y);
+      this.badge(sx + 16, sy + 14, `${ha.name}: ${fmtAreaAll(a)} · perimeter ${fmtLen(per)}`, '#c2410c');
+    }
+    // measuring chain: segment lengths, running total, and the area once it is closed
+    const m = this.mchain;
+    if (m && m.pts.length) {
+      const live = !m.done && !m.closed && this.preview && this.mouse.inside ? [...m.pts, this.preview] : m.pts;
+      const near1 = !m.done && !m.closed && m.pts.length >= 3 && (() => { const [fx, fy] = this.w2s(m.pts[0].x, m.pts[0].y); return Math.hypot(fx - this.mouse.sx, fy - this.mouse.sy) < 10; })();
+      const ring = m.closed || near1 ? m.pts : null;
+      this.screenT(); ctx.save();
+      if (ring) {
+        ctx.beginPath(); ring.forEach((q, i) => { const [sx, sy] = this.w2s(q.x, q.y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); }); ctx.closePath();
+        ctx.fillStyle = 'rgba(194,65,12,.12)'; ctx.fill();
       }
+      ctx.strokeStyle = '#c2410c'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); live.forEach((q, i) => { const [sx, sy] = this.w2s(q.x, q.y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); });
+      if (ring) { const [sx, sy] = this.w2s(ring[0].x, ring[0].y); ctx.lineTo(sx, sy); }
+      ctx.stroke(); ctx.setLineDash([]);
+      m.pts.forEach((q, i) => { const [sx, sy] = this.w2s(q.x, q.y); ctx.beginPath(); ctx.arc(sx, sy, i === 0 && near1 ? 7 : 4, 0, Math.PI * 2); ctx.fillStyle = i === 0 && near1 ? '#fff' : '#c2410c'; ctx.fill(); ctx.strokeStyle = '#c2410c'; ctx.stroke(); });
+      ctx.restore();
+      const segs = (ring ? [...ring, ring[0]] : live), lens = [];
+      for (let i = 0; i < segs.length - 1; i++) {
+        const a = segs[i], b = segs[i + 1], L = Math.hypot(b.x - a.x, b.y - a.y);
+        lens.push(L);
+        if (L > 0.01) this.dimLine([a.x, a.y], [b.x, b.y], fmtLen(L), '#c2410c', true);
+      }
+      const total = lens.reduce((s, v) => s + v, 0), last = live[live.length - 1], prev = live[live.length - 2];
+      this.screenT();
+      const [bx, by] = this.w2s(last.x, last.y);
+      let info = `Total ${fmtLen(total)}`;
+      if (prev) { let deg = Math.round(-Math.atan2(last.y - prev.y, last.x - prev.x) / DEG); if (deg < 0) deg += 360; info = `${fmtLen(lens[lens.length - 1] || 0)} · ${deg}°  ·  ${info}`; }
+      if (ring) {
+        const area = polyArea(ring.map((q) => [q.x, q.y])), [cx, cy] = this.w2s(ring.reduce((s, q) => s + q.x, 0) / ring.length, ring.reduce((s, q) => s + q.y, 0) / ring.length);
+        this.badge(cx - 90, cy - 11, `${fmtAreaAll(area)}`, '#c2410c');
+        info = near1 && !m.closed ? 'Click to close the area' : `Perimeter ${fmtLen(total)}  ·  Enter to keep, Esc to clear`;
+      } else if (m.done) info += '  ·  Enter to keep as dimensions';
+      this.badge(bx + 14, by + 16, info, '#c2410c');
+    }
+    // Figma-style distances: hold Alt with something selected (to another item, or to the walls round it),
+    // and the clearance to the walls while an item is being dragged
+    const selO = this.app.selected();
+    if (selO && selO.level === store.level && (this.altDown || this.drag?.mode === 'move') && store.tool === 'select') {
+      const a = this.boxOf(selO), hov = this.hoverId && this.hoverId !== selO.id ? getObj(this.hoverId) : null, b = hov && this.boxOf(hov);
+      if (a) { if (b && !this.drag) this.drawGaps(a, b); else this.drawClearances(a, selO.id); }
     }
     // placement ghost
     const key = store.tool === 'place' ? store.armed : this.dragOver ? store.dragKey : null;

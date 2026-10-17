@@ -225,3 +225,37 @@ export function solveQuad(lens, base, dir, known, near) {
   ok.sort((a, b) => a.reduce((s, _, i) => s + (cornerAngle(a, i) - want[i]) ** 2, 0) - b.reduce((s, _, i) => s + (cornerAngle(b, i) - want[i]) ** 2, 0));
   return ok[0];
 }
+
+// ---------------------------------------------------------------- dividing a plot into equal parts
+// Keep the part of a polygon where n·p ≤ c (n a unit vector), or ≥ c when keepBelow is false.
+function clipHalf(poly, nx, ny, c, keepBelow = true) {
+  const f = ([x, y]) => (keepBelow ? 1 : -1) * (nx * x + ny * y - c), out = [];
+  poly.forEach((p, i) => {
+    const q = poly[(i + 1) % poly.length], fp = f(p), fq = f(q);
+    if (fp <= 0) out.push(p);
+    if ((fp < 0 && fq > 0) || (fp > 0 && fq < 0)) { const t = fp / (fp - fq); out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]); }
+  });
+  return out;
+}
+// Split the plot into n parts of equal area with cuts parallel to side k. Returns the parts and the cut lines.
+export function dividePlot(p, n, k) {
+  const pts = p.pts, a = pts[k], b = pts[(k + 1) % pts.length], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  let nx = -(b[1] - a[1]) / L, ny = (b[0] - a[0]) / L;
+  const cx = pts.reduce((s, q) => s + q[0], 0) / pts.length, cy = pts.reduce((s, q) => s + q[1], 0) / pts.length;
+  if (nx * (cx - a[0]) + ny * (cy - a[1]) < 0) { nx = -nx; ny = -ny; } // pointing into the plot
+  const ds = pts.map(([x, y]) => nx * x + ny * y), lo = Math.min(...ds), hi = Math.max(...ds);
+  const total = polyArea(pts), cuts = [lo];
+  for (let i = 1; i < n; i++) {
+    let s0 = lo, s1 = hi;
+    for (let it = 0; it < 60; it++) { const m = (s0 + s1) / 2; if (polyArea(clipHalf(pts, nx, ny, m)) < (total * i) / n) s0 = m; else s1 = m; }
+    cuts.push((s0 + s1) / 2);
+  }
+  cuts.push(hi);
+  const parts = [], lines = [];
+  for (let i = 0; i < n; i++) parts.push(clipHalf(clipHalf(pts, nx, ny, cuts[i], false), nx, ny, cuts[i + 1]));
+  for (let i = 1; i < n; i++) {
+    const on = clipHalf(pts, nx, ny, cuts[i]).filter(([x, y]) => Math.abs(nx * x + ny * y - cuts[i]) < 1e-6);
+    if (on.length >= 2) { on.sort((u, v) => (u[0] - v[0]) * ny - (u[1] - v[1]) * nx); lines.push([on[0], on[on.length - 1]]); }
+  }
+  return { parts, lines };
+}

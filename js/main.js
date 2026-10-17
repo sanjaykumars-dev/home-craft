@@ -6,7 +6,7 @@ import {
 } from './state.js';
 import { CATALOG, CATALOG_INDEX, TYPES, ICONS, iconForObj, labelForObj, floorPoly, polyArea, setSideLength, inScope, objScope as objScopeOf } from './catalog.js';
 import { Plan2D } from './plan2d.js';
-import { plotOf, rect, shapePlot, siteBounds, sideLen, setSide, cornerAngle, setCornerAngle, sideBearing, setSideBearing, sideFacing, setbackPoly, alignSide, plotStats, plotEditBlock, solveQuad, CENT, SQFT } from './plot.js';
+import { plotOf, rect, shapePlot, siteBounds, sideLen, setSide, cornerAngle, setCornerAngle, sideBearing, setSideBearing, sideFacing, setbackPoly, alignSide, plotStats, plotEditBlock, solveQuad, dividePlot, CENT, SQFT } from './plot.js';
 import { DESIGNS, keralaTraditional } from './designs.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -59,14 +59,14 @@ const HINTS = {
   select: 'Click to select · drag to move · drag empty space to pan · scroll to zoom',
   wall: 'Click to start · click each corner · type a length + Enter for exact size · double-click or Esc to finish · Shift = free angle',
   room: 'Drag a rectangle to create a room — four walls plus a floor',
-  measure: 'Drag between any two points to measure (snaps to wall faces and openings)',
+  measure: 'Click point to point to measure · click the first point to close an area (m², ft², cents) · Enter keeps it · Esc clears · hover a room for its area · select something and hold Alt for distances',
   dimension: 'Click the first point, then the second, to add a permanent dimension line · double-click any dimension to type a value',
   stairdraw: 'Drag the stair area — the steps re-flow to fit · a single click places a standard size',
   guide: 'Click two points to lay a guide line (15° steps, Shift = free) · guides lock in place · walls snap to guides and crossings',
 };
 function setTool(tool, opts = {}) {
   if (store.tool === 'wall' && tool !== 'wall') plan.finishDraft();
-  if (tool !== 'measure') plan.measure = null;
+  if (tool !== 'measure') { plan.mchain = null; plan.hoverArea = null; }
   plan.dimDraft = null; plan.guideDraft = null;
   store.tool = tool;
   store.armed = tool === 'place' ? opts.armed : null;
@@ -236,7 +236,7 @@ const TREE_GROUPS = [
   ['Walls', (o) => o.type === 'wall'], ['Doors & windows', (o) => !!o.wallId], ['Rooms & floors', (o) => o.type === 'floor'],
   ['Stairs', (o) => o.type === 'stairs' || o.type === 'spiral'], ['Roof & facade', (o) => ['roof', 'balcony', 'cladding', 'louvers', 'frame', 'chimney', 'column', 'portico'].includes(o.type)],
   ['Furniture & fittings', (o) => objScopeOf(o) === 'indoor'], ['Outdoor & garden', (o) => objScopeOf(o) === 'outdoor'],
-  ['Dimensions', (o) => o.type === 'dimension'], ['Guides', (o) => o.type === 'guide'],
+  ['Dimensions', (o) => o.type === 'dimension'], ['Guides', (o) => o.type === 'guide'], ['Areas', (o) => o.type === 'area'],
 ];
 const groupOf = (o) => TREE_GROUPS.find(([, f]) => f(o))?.[0] || 'Other';
 const treeOpen = new Set(['L0']);
@@ -291,7 +291,8 @@ function duplicateSelected() {
   if (!o) return;
   checkpoint();
   const c = { ...structuredClone(o), id: uid() };
-  if (o.x1 !== undefined) {
+  if (o.type === 'area') c.pts = o.pts.map(([x, y]) => [x + 1, y + 1]);
+  else if (o.x1 !== undefined) {
     const off = 1;
     Object.assign(c, { x1: o.x1 + off, y1: o.y1 + off, x2: o.x2 + off, y2: o.y2 + off });
   } else if (o.wallId) {
@@ -308,7 +309,10 @@ function rotateSelected(deg = 90) {
   if (!o) return;
   if (o.locked) { toast('This element is locked — unlock it first', true); return; }
   checkpoint();
-  if (o.x1 !== undefined) {
+  if (o.type === 'area') {
+    const cx = o.pts.reduce((s, q) => s + q[0], 0) / o.pts.length, cy = o.pts.reduce((s, q) => s + q[1], 0) / o.pts.length, r = deg * DEG;
+    o.pts = o.pts.map(([x, y]) => [cx + (x - cx) * Math.cos(r) - (y - cy) * Math.sin(r), cy + (x - cx) * Math.sin(r) + (y - cy) * Math.cos(r)]);
+  } else if (o.x1 !== undefined) {
     const cx = (o.x1 + o.x2) / 2, cy = (o.y1 + o.y2) / 2, r = deg * DEG;
     const rot = (x, y) => [cx + (x - cx) * Math.cos(r) - (y - cy) * Math.sin(r), cy + (x - cx) * Math.sin(r) + (y - cy) * Math.cos(r)];
     [o.x1, o.y1] = rot(o.x1, o.y1); [o.x2, o.y2] = rot(o.x2, o.y2);
@@ -322,7 +326,8 @@ function nudge(dx, dy) {
   if (!o) return;
   if (o.locked) { toast('This element is locked — unlock it first', true); return; }
   checkpoint();
-  if (o.x1 !== undefined) { o.x1 += dx; o.x2 += dx; o.y1 += dy; o.y2 += dy; }
+  if (o.type === 'area') o.pts = o.pts.map(([x, y]) => [x + dx, y + dy]);
+  else if (o.x1 !== undefined) { o.x1 += dx; o.x2 += dx; o.y1 += dy; o.y2 += dy; }
   else if (o.wallId) { const w = getObj(o.wallId); o.t = Math.max(o.width / 2, Math.min(wallLen(w) - o.width / 2, o.t + (dx || dy))); }
   else { o.x += dx; o.y += dy; }
   emit('doc');
@@ -588,6 +593,7 @@ function renderPlot(panel) {
   }
   const gap = Math.hypot(p.pts[0][0] - p.pts[n - 1][0], p.pts[0][1] - p.pts[n - 1][1]);
   if (n === 4) sec.append(surveyBox(p));
+  sec.append(divideBox(p));
   // the setback line: a straight buildable rectangle (default) or parallel to every side
   const sb = setbackPoly(p), rectMode = p.setbackMode !== 'follow';
   const sbBox = h('div', { class: 'psec-in' },
@@ -621,6 +627,31 @@ function renderPlot(panel) {
       h('button', { disabled: !!p.locked, onclick: () => fitPlot('boundary') }, 'Fit to boundary'),
       h('button', { disabled: !!p.locked, title: 'Start the plot again as a rectangle, skewed plot or trapezoid', onclick: () => { if (!confirm('Replace this plot with a new shape?')) return; checkpoint(); delete doc.plot; emit('doc'); renderProps(true); } }, 'New shape…'),
       h('button', { class: 'danger', disabled: !!p.locked, onclick: () => { checkpoint(); delete doc.plot; emit('doc'); renderProps(true); } }, 'Remove plot')));
+}
+
+// Divide the plot into equal parts (family partition, two houses on one plot …): areas plus the cut lines.
+const division = { n: 2, side: null, open: false };
+function divideBox(p) {
+  const n = p.pts.length, L = (i) => String.fromCharCode(65 + (i % n)), side = division.side ?? alignSide(p);
+  const COLORS = ['#7c3aed', '#0891b2', '#ea580c', '#16a34a', '#db2777', '#ca8a04'];
+  const has = store.doc.objects.some((o) => o.division);
+  const run = () => {
+    const { parts, lines } = dividePlot(p, division.n, side);
+    checkpoint();
+    store.doc.objects = store.doc.objects.filter((o) => !o.division);
+    parts.forEach((pts, i) => store.doc.objects.push({ id: uid(), type: 'area', level: 0, division: true, label: `Part ${i + 1} of ${division.n}`, color: COLORS[i % COLORS.length], pts: pts.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)]) }));
+    for (const [a, b] of lines) store.doc.objects.push({ id: uid(), type: 'dimension', level: 0, division: true, x1: a[0], y1: a[1], x2: b[0], y2: b[1], offset: 0, color: '#b91c1c' });
+    emit('doc'); renderProps(true);
+    const each = polyArea(parts[0]);
+    toast(`Divided into ${division.n} equal parts of ${(each / CENT).toFixed(3)} cents (${each.toFixed(2)} m²) each`);
+  };
+  return h('details', { class: 'survey', open: division.open, ontoggle: (e) => { division.open = e.target.open; } },
+    h('summary', {}, '✂ Divide into equal parts'),
+    h('p', { class: 'note' }, 'For a family partition or two houses on one plot: every part gets exactly the same area, with straight cuts you can set out on site.'),
+    h('div', { class: 'row' }, h('label', {}, 'Parts'), h('select', { onchange: (e) => { division.n = +e.target.value; } }, [2, 3, 4, 5, 6].map((k) => h('option', { value: k, selected: division.n === k }, k === 2 ? '2 (halves)' : String(k))))),
+    h('div', { class: 'row' }, h('label', {}, 'Cuts parallel to'), h('select', { onchange: (e) => { division.side = +e.target.value; } }, p.pts.map((_, i) => h('option', { value: i, selected: side === i }, `${L(i)}–${L(i + 1)}`)))),
+    h('div', { class: 'actions' }, h('button', { class: 'primary', onclick: run }, has ? 'Divide again' : 'Divide plot'),
+      has ? h('button', { onclick: () => { checkpoint(); store.doc.objects = store.doc.objects.filter((o) => !o.division); emit('doc'); renderProps(true); } }, 'Remove division') : null));
 }
 
 // Rebuild a four-sided plot from survey measurements: four lengths, which side is straight and which way it runs,
@@ -939,6 +970,8 @@ function toggleDimSettings(force) {
       ...[['center', 'Centre-line (setting-out)'], ['outside', 'Outside faces'], ['clear', 'Inside clear (room size)']].map(([v, l]) =>
         h('label', { class: 'chk' }, h('input', { type: 'radio', name: 'dmode', checked: D.mode === v, onchange: () => set('mode', v) }), l))),
     h('div', { class: 'pop-grid' },
+      h('label', {}, 'Area unit'), h('select', { onchange: (e) => set('areaUnit', e.target.value) },
+        [['auto', 'Auto (m² / ft²)'], ['m2', 'Square metres'], ['sqft', 'Square feet'], ['cent', 'Cents'], ['all', 'm² + cents']].map(([v, l]) => h('option', { value: v, selected: (D.areaUnit || 'auto') === v }, l))),
       h('label', {}, 'Precision'), sel('precision', precOpts),
       h('label', {}, 'Snap step'), sel('snap', snapOpts),
       h('label', {}, 'Text size'), h('input', { type: 'range', min: 8, max: 16, value: D.textSize, onpointerdown: () => checkpoint(), oninput: (e) => { doc.dims = { ...(doc.dims || {}), textSize: +e.target.value }; plan.redraw(); }, onchange: () => { dropIfUnchanged(); emit('doc'); } })),

@@ -197,6 +197,7 @@ export const DEFAULT_DIMS = {
   precision: null,     // decimals in the display unit (null = unit default); for ft: inch fraction denominator
   snap: null,          // snap step in metres (null = unit default)
   textSize: 11,
+  areaUnit: 'auto',    // auto | m2 | sqft | cent | all
 };
 export const dims = () => ({ ...DEFAULT_DIMS, ...(store.doc.dims || {}) });
 const unitOf = (u = store.doc.units) => UNITS[u] || UNITS.m;
@@ -223,7 +224,18 @@ export const unitLabel = () => unitOf().label;
 export const gridStep = () => dims().snap || (store.doc.units === 'ft' ? FT / 4 : 0.1);
 export const snapVal = (v, g = gridStep()) => Math.round(v / g) * g;
 export const isImperial = () => store.doc.units === 'ft';
-export const fmtArea = (a) => (isImperial() ? `${(a * 10.7639).toFixed(0)} ft²` : `${a.toFixed(2)} m²`);
+// Areas in the unit chosen in dimension settings: auto (m² or ft² with the drawing units), m², ft², cents or all three.
+export const CENT_M2 = 40.4686;
+export const fmtArea = (a, unit = dims().areaUnit) => {
+  const m2 = `${a.toFixed(2)} m²`, ft2 = `${Math.round(a * 10.7639).toLocaleString()} ft²`, ct = `${(a / CENT_M2).toFixed(2)} cents`;
+  if (unit === 'm2') return m2;
+  if (unit === 'sqft') return ft2;
+  if (unit === 'cent') return ct;
+  if (unit === 'all') return isImperial() ? `${ft2} · ${ct}` : `${m2} · ${ct}`;
+  return isImperial() ? ft2 : m2;
+};
+// every unit at once, for measurements
+export const fmtAreaAll = (a) => `${a.toFixed(2)} m²  ·  ${Math.round(a * 10.7639).toLocaleString()} ft²  ·  ${(a / CENT_M2).toFixed(3)} cents`;
 // Wall length as displayed for the chosen measuring convention.
 export function wallDimLen(w) {
   const L = wallLen(w), mode = dims().mode;
