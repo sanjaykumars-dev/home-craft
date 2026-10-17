@@ -3,8 +3,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { store, emit, checkpoint, dropIfUnchanged, getObj, levelElev, baseElev, wallLen, projectToSegment, snapVal, fmtLen } from './state.js';
+import { store, emit, checkpoint, dropIfUnchanged, getObj, levelElev, baseElev, wallLen, projectToSegment, snapVal, fmtLen, levelCentroid } from './state.js';
 import { buildWall, buildItem, finalizeShadows, buildPlinth } from './builders3d.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // Things left out of elevation drawings so the facade reads clearly.
 const ELEV_HIDE = new Set(['tree', 'shrub', 'car', 'lamp', 'paving', 'hedge', 'flowerbed', 'pot', 'rocks', 'bench', 'sitout', 'swing', 'fountain', 'boundary', 'gate', 'fence', 'carport', 'pool', 'gazebo', 'pergola', 'well', 'septic', 'tulsi', 'sofa', 'bed', 'table', 'kitchen']);
@@ -81,6 +82,7 @@ export class View3D {
     scene.add(this.selBox);
 
     this.raycaster = new THREE.Raycaster();
+    this.raycaster.layers.enableAll(); // picking also sees meshes hidden behind the merged batches
     this.setSun(this.sunHour);
     this.bindEvents();
     new ResizeObserver(() => this.resize()).observe(container);
@@ -264,29 +266,57 @@ export class View3D {
   }
 
   // ------------------------------------------------------------ scene building
+  // Everything an object's model depends on; unchanged objects keep their model between rebuilds.
+  modelSig(o, ctx) {
+    let s = JSON.stringify(o);
+    if (o.type === 'wall') s += ctx.ops(o.id) + ctx.centre(o.level);
+    if (o.type === 'floor' && o.level > 0) s += ctx.stairs(o.level - 1);
+    return s;
+  }
+  disposeModel(m) { m.traverse((x) => { if (x.isMesh && !x.geometry.userData?.shared) x.geometry.dispose(); }); }
   rebuild() {
     const doc = store.doc;
-    for (const c of [...this.content.children]) {
-      this.content.remove(c);
-      c.traverse((m) => { if (m.isMesh && !m.geometry.userData?.shared) m.geometry.dispose(); });
-    }
+    this.unbatch();
+    for (const c of [...this.content.children]) this.content.remove(c);
+    if (this.plinthModel) { this.disposeModel(this.plinthModel); this.plinthModel = null; }
+    // a change to the storeys or the plinth moves everything, so start afresh
+    const global = JSON.stringify([doc.plinth, doc.plinthFinish, doc.levels]);
+    if (global !== this.cacheSig) { for (const m of this.cache?.values() || []) this.disposeModel(m); this.cache = new Map(); this.cacheSig = global; }
+    const ops = new Map(), memo = new Map();
+    for (const o of doc.objects) if (o.wallId) { if (!ops.has(o.wallId)) ops.set(o.wallId, []); ops.get(o.wallId).push(o); }
+    const once = (k, f) => (memo.has(k) ? memo.get(k) : (memo.set(k, f()), memo.get(k)));
+    const ctx = {
+      ops: (id) => JSON.stringify(ops.get(id) || []),
+      centre: (l) => once('c' + l, () => JSON.stringify(levelCentroid(l, doc))),
+      stairs: (l) => once('s' + l, () => JSON.stringify(doc.objects.filter((s) => (s.type === 'stairs' || s.type === 'spiral') && s.level === l))),
+    };
     // indoor workspace = doll's-house cut-away: no roof, nothing above the current storey
     const indoor = store.view.scope === 'indoor' && !this.elev;
     const maxLevel = this.forceLevel ?? (store.view.upper && !indoor ? Infinity : store.level);
     const hideRoof = this.forceNoRoof ?? (!store.view.roof || indoor);
     this.index = {};
+    const live = new Set();
     for (const o of doc.objects) {
-      if (o.wallId || o.hidden) continue;
-      if (o.level > maxLevel) continue;
+      if (o.wallId) continue;
+      live.add(o.id);
+      if (o.hidden || o.level > maxLevel) continue;
       if (o.type === 'roof' && hideRoof) continue;
       if (this.elev && ELEV_HIDE.has(o.type)) continue;
-      const m = o.type === 'wall' ? buildWall(o, doc) : buildItem(o, doc);
-      if (!m) continue;
+      const sig = this.modelSig(o, ctx);
+      let m = this.cache.get(o.id);
+      if (!m || m.userData.sig !== sig) {
+        if (m) this.disposeModel(m);
+        m = o.type === 'wall' ? buildWall(o, doc) : buildItem(o, doc);
+        if (!m) { this.cache.delete(o.id); continue; }
+        m.userData.sig = sig;
+        this.cache.set(o.id, m);
+      }
       this.content.add(m);
       this.index[o.id] = m;
     }
+    for (const [id, m] of this.cache) if (!live.has(id)) { this.disposeModel(m); this.cache.delete(id); }
     const plinth = buildPlinth(doc);
-    if (plinth) this.content.add(plinth);
+    if (plinth) { this.content.add(plinth); this.plinthModel = plinth; }
     finalizeShadows(this.content);
     if (this.elev) this.fitElevation();
     this.player?.collect();
@@ -300,6 +330,101 @@ export class View3D {
       this.updateSunPos();
     }
     this.updateSelection();
+    this.batchAt = performance.now() + 300;
+  }
+
+  // Large scenes: merge every static mesh that shares a material into one mesh, so thousands of
+  // draw calls become a few hundred. The originals move to layer 1: not drawn, still picked and collided with.
+  batchStatic() {
+    let count = 0;
+    this.content.traverse((m) => { if (m.isMesh) count++; });
+    if (count < 250) return;
+    const moving = (m) => { for (let p = m; p && p !== this.content; p = p.parent) if (p.userData.doorLeaf || p.userData.slideDoor) return true; return false; };
+    const groups = new Map();
+    this.content.updateMatrixWorld(true);
+    const add = (m, mat, start, count) => {
+      const key = `${mat.uuid}|${m.castShadow}|${m.receiveShadow}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ m, mat, start, count });
+    };
+    const batched = [];
+    this.content.traverseVisible((m) => {
+      if (!m.isMesh || m.isInstancedMesh || m.isSkinnedMesh || moving(m)) return;
+      const n = m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count;
+      // multi-material meshes (walls: inner and outer faces) are split by material group
+      if (Array.isArray(m.material)) for (const gr of m.geometry.groups) { const mat = m.material[gr.materialIndex]; if (mat) add(m, mat, gr.start, Math.min(gr.count, n - gr.start)); }
+      else add(m, m.material, 0, n);
+      batched.push(m);
+    });
+    const batch = new THREE.Group();
+    batch.name = 'batch';
+    for (const list of groups.values()) {
+      const mat = list[0].mat, names = ['position', 'normal', 'uv', ...(mat.vertexColors ? ['color'] : [])], geos = [];
+      for (const { m, start, count } of list) {
+        const src = m.geometry, g = new THREE.BufferGeometry(), n = src.attributes.position.count;
+        for (const k of names) {
+          const a = src.attributes[k];
+          if (a) g.setAttribute(k, a.isInterleavedBufferAttribute ? a.clone() : a.clone());
+          else if (k === 'uv') g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
+          else if (k === 'color') g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(n * 3).fill(1), 3));
+        }
+        if (!g.attributes.normal) g.computeVertexNormals();
+        g.setIndex(new THREE.BufferAttribute(src.index ? Uint32Array.from(src.index.array.subarray(start, start + count)) : Uint32Array.from({ length: count }, (_, i) => start + i), 1));
+        g.applyMatrix4(m.matrixWorld);
+        geos.push(g);
+      }
+      const merged = mergeGeometries(geos, false);
+      geos.forEach((g) => g.dispose());
+      if (!merged) continue;
+      const mesh = new THREE.Mesh(merged, mat);
+      mesh.castShadow = list[0].m.castShadow; mesh.receiveShadow = list[0].m.receiveShadow;
+      mesh.matrixAutoUpdate = false; mesh.frustumCulled = false;
+      batch.add(mesh);
+    }
+    for (const m of batched) m.layers.set(1);
+    this.batch = batch;
+    this.scene.add(batch);
+    // each door leaf and gate leaf: its parts merged per material in the leaf's own frame, so it still swings
+    this.leafBatches = [];
+    this.content.traverse((pv) => {
+      if (!pv.userData.doorLeaf && !pv.userData.slideDoor) return;
+      const inv = pv.matrixWorld.clone().invert(), byMat = new Map(), parts = [];
+      pv.traverse((m) => {
+        if (!m.isMesh || Array.isArray(m.material) || m.isInstancedMesh) return;
+        if (!byMat.has(m.material.uuid)) byMat.set(m.material.uuid, []);
+        byMat.get(m.material.uuid).push(m); parts.push(m);
+      });
+      if (parts.length < 2) return;
+      for (const list of byMat.values()) {
+        const geos = list.map((m) => {
+          const src = m.geometry, g = new THREE.BufferGeometry(), n = src.attributes.position.count;
+          g.setAttribute('position', src.attributes.position.clone());
+          g.setAttribute('normal', src.attributes.normal ? src.attributes.normal.clone() : src.attributes.position.clone());
+          g.setAttribute('uv', src.attributes.uv ? src.attributes.uv.clone() : new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
+          if (!src.attributes.normal) g.computeVertexNormals();
+          g.setIndex(src.index ? src.index.clone() : null);
+          if (!src.index) g.setIndex(new THREE.BufferAttribute(Uint32Array.from({ length: n }, (_, i) => i), 1));
+          return g.applyMatrix4(inv.clone().multiply(m.matrixWorld));
+        });
+        const merged = mergeGeometries(geos, false);
+        geos.forEach((g) => g.dispose());
+        if (!merged) continue;
+        const mesh = new THREE.Mesh(merged, list[0].material);
+        mesh.castShadow = list[0].castShadow; mesh.receiveShadow = true; mesh.userData.leafBatch = true;
+        pv.add(mesh); this.leafBatches.push(mesh);
+        for (const m of list) m.layers.set(1);
+      }
+    });
+  }
+  unbatch() {
+    this.batchAt = 0;
+    if (!this.batch) return;
+    this.scene.remove(this.batch);
+    this.batch.traverse((m) => { if (m.isMesh) m.geometry.dispose(); });
+    this.batch = null;
+    for (const m of this.leafBatches || []) { m.parent?.remove(m); m.geometry.dispose(); }
+    this.leafBatches = [];
+    this.content.traverse((m) => { if (m.isMesh) m.layers.set(0); });
   }
   updateSelection() {
     const id = store.selectedId;
@@ -363,6 +488,7 @@ export class View3D {
     const dt = Math.min(0.05, this.clock.getDelta());
     if (!this.el.offsetWidth) return;
     if (this.dirty) { this.dirty = false; this.rebuild(); }
+    if (this.batchAt && performance.now() > this.batchAt && !this.drag) { this.batchAt = 0; this.batchStatic(); }
     if (this.player?.active) this.player.update(dt);
     else if (this.tour?.active) this.tour.update(dt);
     else if (this.walk) {

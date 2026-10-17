@@ -24,6 +24,7 @@ import { store, levelElev } from './state.js';
 import { floorPoly, pointInPoly } from './catalog.js';
 import { makeCharacter, preloadCharacter } from './character.js';
 
+const PHYSICS_STEP = 0.35;
 export const PHYSICS = {
   radius: 0.25, height: 1.75, eye: 1.62,
   walk: 1.4, run: 3.6, accel: 12,
@@ -35,7 +36,8 @@ export const PHYSICS = {
 };
 
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
-const DIRS8 = Array.from({ length: 8 }, (_, i) => new THREE.Vector3(Math.cos((i * Math.PI) / 4), 0, Math.sin((i * Math.PI) / 4)));
+const DIRS16 = Array.from({ length: 16 }, (_, i) => new THREE.Vector3(Math.cos((i * Math.PI) / 8), 0, Math.sin((i * Math.PI) / 8)));
+const BODY_H = [PHYSICS_STEP + 0.08, 0.7, 1.05, 1.55]; // knee, hip, chest and head rays
 
 export class Player {
   constructor(view, app) {
@@ -47,6 +49,7 @@ export class Player {
     this.yaw = 0; this.pitch = 0.18; this.dist = 3.4; this.facing = 0;
     this.keys = {};
     this.ray = new THREE.Raycaster();
+    this.ray.layers.enableAll(); // the real meshes sit on layer 1 when the scene is batched
     this.solids = [];
     this.onKey = (e) => {
       if (!this.active || e.target.tagName === 'INPUT') return;
@@ -69,16 +72,19 @@ export class Player {
 
   // Meshes the character can collide with (rebuilt whenever the model changes).
   collect() {
-    this.solids = []; this.camSolids = [];
+    this.solids = []; this.camSolids = []; this.solidBoxes = []; this.camBoxes = []; this.lastNear = null;
     this.view.content.updateMatrixWorld(true);
+    const boxOf = (m, pad = 0) => { if (!m.geometry.boundingBox) m.geometry.computeBoundingBox(); return m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld).expandByScalar(pad); };
     this.view.content.traverse((m) => {
-      if (!m.isMesh || m.isInstancedMesh) return;
+      if (!m.isMesh || m.isInstancedMesh || m.userData.leafBatch) return;
       let p = m, pass = false;
       while (p && p !== this.view.content) { if (p.userData.passable) { pass = p.userData.passable; break; } p = p.parent; }
-      if (!pass) this.solids.push(m);
-      if (!pass || pass === 'door') this.camSolids.push(m); // doors and glass still stop the camera
+      if (!pass) { this.solids.push(m); this.solidBoxes.push(boxOf(m)); }
+      // doors and glass still stop the camera; a door leaf may swing up to its own width away
+      if (!pass || pass === 'door') { this.camSolids.push(m); this.camBoxes.push(boxOf(m, pass === 'door' ? 1.3 : 0)); }
     });
-    // moving door parts; their state survives rebuilds, and every door starts closed
+    this.near = this.solids; this.nearCam = this.camSolids;
+    // moving door and gate parts; their state survives rebuilds, and every door starts closed
     const prev = new Map((this.doors || []).map((d) => [d.key, d]));
     this.doors = []; this.sliders = []; this.panels = [];
     this.view.content.traverse((o) => {
@@ -90,7 +96,7 @@ export class Player {
         o.rotation.y = d.angle;
         this.doors.push(d);
       }
-      if (S) { o.position.x = 0; this.sliders.push({ g: o, ...S, off: 0, idle: 99 }); }
+      if (S) { const rest = S.rest ?? o.position.x; o.position.x = 0; this.sliders.push({ g: o, ...S, rest, off: 0, idle: 99 }); }
       if (F) this.panels.push({ g: o, ...F });
     });
   }
@@ -113,7 +119,8 @@ export class Player {
     this.pos.copy(spawn.pos); this.vel.set(0, 0, 0);
     // spawn.yaw uses the old camera convention (0 = looking toward −z); facing is the body's heading (0 = +z)
     this.facing = spawn.yaw + Math.PI; this.camYaw = this.facing; this.pitch = 0.22;
-    this.pos.y = this.groundAt(this.pos, 50)?.y ?? spawn.pos.y;
+    this.pos.y = this.groundAt(this.pos, 50, this.solids)?.y ?? spawn.pos.y;
+    this.visY = this.pos.y;
     this.active = true;
     window.addEventListener('keydown', this.onKey); window.addEventListener('keyup', this.onKey);
     v.el.addEventListener('pointerdown', this.onDown); window.addEventListener('pointermove', this.onMove); window.addEventListener('pointerup', this.onUp);
@@ -131,20 +138,34 @@ export class Player {
     v.el.removeEventListener('wheel', this.onWheel);
     v.scene.remove(this.body);
     v.el.classList.remove('playing');
-    v.markDirty(); // put the doors back to their designed positions
+    // put the doors and gates back to their designed positions
+    for (const d of this.doors || []) d.pivot.rotation.y = d.pivot.userData.doorLeaf.designAngle ?? 0;
+    for (const s of this.sliders || []) s.g.position.x = s.rest || 0;
+    v.markDirty();
     v.controls.enabled = true;
     if (this.saved) { v.camera.position.copy(this.saved.pos); v.controls.target.copy(this.saved.target); }
     this.app.onPlayerChange?.(false);
   }
 
+  // Only meshes near the character are tested: a box filter over precomputed bounds, refreshed every half metre.
+  nearby() {
+    const p = this.pos, q = this.lastNear;
+    if (q && Math.abs(q.x - p.x) < 0.5 && Math.abs(q.z - p.z) < 0.5 && Math.abs(q.y - p.y) < 0.5) return;
+    this.lastNear = p.clone();
+    const R = 2.2, C = this.dist + 1.5;
+    this.near = []; this.nearCam = [];
+    this.solidBoxes.forEach((b, i) => { if (b.max.x > p.x - R && b.min.x < p.x + R && b.max.z > p.z - R && b.min.z < p.z + R && b.max.y > p.y - 4 && b.min.y < p.y + 3) this.near.push(this.solids[i]); });
+    this.camBoxes.forEach((b, i) => { if (b.max.x > p.x - C && b.min.x < p.x + C && b.max.z > p.z - C && b.min.z < p.z + C && b.max.y > p.y - 2 && b.min.y < p.y + C + 2) this.nearCam.push(this.camSolids[i]); });
+  }
+
   // Highest walkable surface under the capsule (searching from just above the step-up height).
-  groundAt(p, from = PHYSICS.stepUp + 0.05) {
+  groundAt(p, from = PHYSICS.stepUp + 0.05, list = this.near) {
     let best = null;
     const offs = [[0, 0], [0.16, 0], [-0.16, 0], [0, 0.16], [0, -0.16]];
     for (const [dx, dz] of offs) {
       this.ray.set(new THREE.Vector3(p.x + dx, p.y + from, p.z + dz), DOWN);
       this.ray.far = from + 3;
-      for (const h of this.ray.intersectObjects(this.solids, false)) {
+      for (const h of this.ray.intersectObjects(list, false)) {
         const n = h.face.normal.clone().transformDirection(h.object.matrixWorld);
         if (n.y < PHYSICS.maxSlopeNormalY) continue; // too steep to stand on
         if (!best || h.point.y > best.y) best = h.point.clone();
@@ -156,14 +177,14 @@ export class Player {
     return best;
   }
 
-  // Push the capsule out of nearby solids at knee, waist and head height.
+  // Push the capsule out of nearby solids at knee, hip, chest and head height, in 16 directions.
   depenetrate() {
     const r = PHYSICS.radius;
-    for (const h of [PHYSICS.stepUp + 0.08, 0.95, 1.55]) {
-      for (const d of DIRS8) {
+    for (const h of BODY_H) {
+      for (const d of DIRS16) {
         this.ray.set(new THREE.Vector3(this.pos.x, this.pos.y + h, this.pos.z), d);
         this.ray.far = r;
-        const hit = this.ray.intersectObjects(this.solids, false)[0];
+        const hit = this.ray.intersectObjects(this.near, false)[0];
         if (!hit) continue;
         const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
         if (Math.abs(n.y) > 0.7) continue; // floors/ceilings are handled by the ground logic
@@ -172,23 +193,27 @@ export class Player {
     }
   }
 
-  // Remove the part of the move that would go into a wall, so the character slides along it.
+  // Remove the part of the move that would go into a solid, so the character slides along it.
+  // Rays leave from the centre and from both sides of the body, so posts, rails and legs can't slip between them.
   slide(move) {
     const r = PHYSICS.radius, len = move.length();
     if (len < 1e-6) return move;
-    for (let iter = 0; iter < 3; iter++) {
-      const dir = move.clone().normalize();
+    for (let iter = 0; iter < 4; iter++) {
+      const dir = move.clone().normalize(), side = new THREE.Vector3(-dir.z, 0, dir.x);
       let blocked = false;
-      for (const h of [PHYSICS.stepUp + 0.08, 0.95, 1.55]) {
-        this.ray.set(new THREE.Vector3(this.pos.x, this.pos.y + h, this.pos.z), dir);
-        this.ray.far = r + move.length();
-        const hit = this.ray.intersectObjects(this.solids, false)[0];
-        if (!hit) continue;
-        const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).setY(0);
-        if (n.lengthSq() < 0.25) continue;
-        n.normalize();
-        const into = move.dot(n);
-        if (into < 0) { move.addScaledVector(n, -into); blocked = true; }
+      for (const h of BODY_H) {
+        for (const s of [0, 0.85, -0.85]) {
+          const o = new THREE.Vector3(this.pos.x, this.pos.y + h, this.pos.z).addScaledVector(side, s * r);
+          this.ray.set(o, dir);
+          this.ray.far = r * Math.sqrt(1 - s * s) + move.length() + 0.01;
+          const hit = this.ray.intersectObjects(this.near, false)[0];
+          if (!hit) continue;
+          const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).setY(0);
+          if (n.lengthSq() < 0.25) continue;
+          n.normalize();
+          const into = move.dot(n);
+          if (into < 0) { move.addScaledVector(n, -into); blocked = true; }
+        }
       }
       if (!blocked) break;
     }
@@ -219,6 +244,7 @@ export class Player {
     this.vel.y = Math.max(-P.maxFall, this.vel.y - P.gravity * dt);
 
     // ---- horizontal move with sliding collision
+    this.nearby();
     const move = this.slide(new THREE.Vector3(this.vel.x * dt, 0, this.vel.z * dt));
     this.pos.add(move);
     this.depenetrate();
@@ -228,10 +254,7 @@ export class Player {
     this.pos.y += this.vel.y * dt;
     const g = this.groundAt(this.pos);
     if (this.pos.y <= g.y + 0.001 && this.vel.y <= 0) {
-      const rise = g.y - this.pos.y;
-      // smooth the step-up so climbing stairs does not jitter
-      this.pos.y = rise > 0.02 ? this.pos.y + Math.min(rise, Math.max(0.05, rise * 0.5)) : g.y;
-      if (this.pos.y > g.y) this.pos.y = g.y;
+      this.pos.y = g.y;
       this.vel.y = 0; this.grounded = true;
     } else if (this.grounded && this.pos.y - g.y < P.stepUp && this.vel.y <= 0) {
       // walking down stairs: stick to the next tread instead of hopping off it
@@ -239,11 +262,16 @@ export class Player {
     } else this.grounded = false;
     if (this.pos.y < -5) { this.pos.y = 0.5; this.vel.set(0, 0, 0); }
 
+    // ---- what you see follows the physics smoothly: height eases over each step instead of jumping
+    this.visY ??= this.pos.y;
+    const gap = this.pos.y - this.visY;
+    this.visY = Math.abs(gap) > 1.2 ? this.pos.y : this.visY + gap * (1 - Math.exp(-dt * (this.grounded ? 16 : 40)));
+
     // ---- animate the body: it always faces its heading; walking backwards plays the cycle in reverse
     const b = this.body, hs = Math.hypot(this.vel.x, this.vel.z), along = this.vel.x * fwd.x + this.vel.z * fwd.z;
     b.rotation.y = this.facing;
     b.userData.animate(dt, { speed: hs, grounded: this.grounded, firstPerson: this.firstPerson, reverse: along < -0.05 });
-    b.position.copy(this.pos);
+    b.position.set(this.pos.x, this.visY, this.pos.z);
     if (this.grounded) b.position.y += b.userData.bob || 0;
 
     // ---- camera looks where the character's face points
@@ -254,7 +282,7 @@ export class Player {
     if (Math.abs(dyaw) > 0.45) this.camYaw = this.facing - Math.sign(dyaw) * 0.45;
     const look = new THREE.Vector3(Math.sin(this.camYaw) * Math.cos(this.pitch), -Math.sin(this.pitch), Math.cos(this.camYaw) * Math.cos(this.pitch));
     const eyeH = b.userData.height ? b.userData.height * 0.92 : P.eye; // small or tall avatars get a matching eye level
-    const eyeY = this.pos.y + eyeH + (this.grounded ? b.userData.bob || 0 : 0);
+    const eyeY = this.visY + eyeH + (this.grounded ? b.userData.bob || 0 : 0);
     if (this.firstPerson) {
       // first person: from the eyes, looking straight ahead (pitch from mouse drag)
       const eye = new THREE.Vector3(this.pos.x, eyeY, this.pos.z).addScaledVector(fwd, 0.1);
@@ -266,12 +294,15 @@ export class Player {
       const head = new THREE.Vector3(this.pos.x, eyeY, this.pos.z);
       const back = new THREE.Vector3(-look.x, Math.sin(this.pitch) * 0.9 + 0.12, -look.z).normalize();
       this.ray.set(head, back); this.ray.far = this.dist;
-      const hit = this.ray.intersectObjects(this.camSolids, false)[0];
+      const hit = this.ray.intersectObjects(this.nearCam, false)[0];
       const d = hit ? Math.max(0.35, hit.distance - 0.2) : this.dist;
-      v.camera.position.lerp(head.clone().addScaledVector(back, d), Math.min(1, dt * 12));
+      const want = head.clone().addScaledVector(back, d), k = 1 - Math.exp(-dt * 10);
+      // pull in fast when a wall gets between, ease back out slowly
+      if (hit) v.camera.position.lerp(want, Math.max(k, 0.5)); else v.camera.position.lerp(want, k);
       const target = head.clone().addScaledVector(look, 3).add(new THREE.Vector3(0, -0.15, 0));
-      v.camera.lookAt(target);
-      v.controls.target.copy(target);
+      this.camTarget = this.camTarget ? this.camTarget.lerp(target, 1 - Math.exp(-dt * 14)) : target.clone();
+      v.camera.lookAt(this.camTarget);
+      v.controls.target.copy(this.camTarget);
     }
     this.app.onPlayerTick?.(this);
   }

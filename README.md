@@ -58,7 +58,9 @@ It's a static site, so no build step is needed. Push the folder to a public GitH
   - The character is a skinned figure animated with real motion capture (idle, walk and run, cross-faded by speed). To use your own realistic human instead, put a rigged model at `assets/character.glb`; see [assets/README.md](assets/README.md).
   - Controls: W/S walk forward or back, A/D turn, Q/E side-step, Shift run, Space jump, drag to turn and look up or down, V for first person. The camera always looks the way the character faces. **Auto tour** lets a guide in a hard hat lead instead.
   - Physics: the body is a 0.5 m × 1.75 m capsule with gravity of 9.81 m/s². It steps up edges of up to 0.35 m, so it climbs stairs and kerbs. Walls, windows, furniture and railings block it, and the camera never passes through walls. **Physics** in the Spectate panel lists all the values.
-  - Doors start closed. A hinged door swings open when you push it, slows down with hinge friction, stops at 100°, and a door closer shuts it a few seconds after you leave. Sliding doors open as you approach.
+  - Doors start closed. A hinged door swings open when you push it, slows down with hinge friction, stops at 100°, and a door closer shuts it a few seconds after you leave. Gates work the same way: swing gates are pushed open leaf by leaf, and sliding gates roll open as you approach.
+  - Solids are strict: walls, furniture, cars, stones, bushes, hedges and railings all block you, tested at knee, hip, chest and head height from the centre and both sides of the body. Every first-floor stair opening has a guard rail, with a gap only where you step off the stairs.
+  - Large scenes stay smooth: static parts are merged into a few hundred meshes, models are cached between edits, and collisions only test what is near the character.
 
 ## PDF drawing set (Export PDF)
 

@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { DEG, wallLen, wallAng, wallArc, wallPointAt, levelElev, baseElev, openingsOf, levelCentroid, outwardSign, toLocal, toWorld } from './state.js';
 import { finishMat, colorMat, paintMat, glassMat, darkGlassMat, waterTint } from './textures.js';
-import { seeded, seedOf, gazeboVerts, carportPosts, floorPoly, stairLayout } from './catalog.js';
+import { seeded, seedOf, gazeboVerts, carportPosts, floorPoly, stairLayout, pointInPoly } from './catalog.js';
 
 // ---------------------------------------------------------------- primitives
 // UVs in metres from vertex positions, projected along the dominant normal axis.
@@ -240,11 +240,42 @@ B.floor = (o, g, doc) => {
       if ((s.type !== 'stairs' && s.type !== 'spiral') || s.level !== o.level - 1) continue;
       const pts = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => toLocal(o, ...toWorld(s, (sx * s.w) / 2, (sy * s.d) / 2)));
       if (!pts.some(([x, y]) => Math.abs(x) < o.w / 2 && Math.abs(y) < o.d / 2)) continue;
-      holes.push(pts.map(([x, y]) => [Math.max(-o.w / 2 + 0.02, Math.min(o.w / 2 - 0.02, x)), Math.max(-o.d / 2 + 0.02, Math.min(o.d / 2 - 0.02, y))]));
+      const hole = pts.map(([x, y]) => [Math.max(-o.w / 2 + 0.02, Math.min(o.w / 2 - 0.02, x)), Math.max(-o.d / 2 + 0.02, Math.min(o.d / 2 - 0.02, y))]);
+      holes.push(hole);
+      if (!o.z) stairwellRail(g, o, s, hole);
     }
   }
   g.add(slab(o, th, 0.02, fin, under, holes));
 };
+
+// Guard rail round a stairwell opening, with a gap only where you step off the top of the stairs.
+function stairwellRail(g, o, s, hole) {
+  let p, d, gap;
+  if (s.type === 'spiral') {
+    // top tread of the spiral and the way you walk off it (same sweep as B.spiral)
+    const R = s.w / 2, n = Math.max(8, Math.round(s.h / 0.19)), fe = ((n - 1) * 2 * Math.PI) / 14;
+    p = [R * 0.6 * Math.cos(fe), -R * 0.6 * Math.sin(fe)]; d = [-Math.sin(fe), -Math.cos(fe)]; gap = 1.1;
+  } else {
+    const path = stairLayout(s).path, a = path[path.length - 2], b = path[path.length - 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    p = b; d = [(b[0] - a[0]) / L, (b[1] - a[1]) / L]; gap = (s.flightW || 1) + 0.3;
+  }
+  // into floor coordinates
+  const P = toLocal(o, ...toWorld(s, p[0], p[1])), Q = toLocal(o, ...toWorld(s, p[0] + d[0], p[1] + d[1])), dx = Q[0] - P[0], dy = Q[1] - P[1];
+  let cx = P[0], cy = P[1];
+  for (let k = 0; k < 80 && pointInPoly(cx, cy, hole); k++) { cx += dx * 0.05; cy += dy * 0.05; }
+  const rail = new THREE.Group(); rail.position.y = 0.02;
+  for (let i = 0; i < hole.length; i++) {
+    const [ax, ay] = hole[i], [bx, by] = hole[(i + 1) % hole.length], L = Math.hypot(bx - ax, by - ay);
+    if (L < 0.2) continue;
+    const ux = (bx - ax) / L, uy = (by - ay) / L, t = (cx - ax) * ux + (cy - ay) * uy, off = Math.abs((cx - ax) * -uy + (cy - ay) * ux);
+    const segs = off < 0.3 && t > -0.3 && t < L + 0.3 ? [[0, t - gap / 2], [t + gap / 2, L]] : [[0, L]];
+    for (const [t0, t1] of segs) {
+      const u0 = Math.max(0, t0), u1 = Math.min(L, t1);
+      if (u1 - u0 > 0.15) railing(rail, [[ax + ux * u0, ay + uy * u0], [ax + ux * u1, ay + uy * u1]], 1.0, 'iron', '#2f343b');
+    }
+  }
+  g.add(rail);
+}
 
 // Polygon slab (any floor shape) with optional holes and ramp slope; top surface at `top`.
 function slab(o, th, top, topMat, sideMat, holes = []) {
@@ -674,17 +705,24 @@ B.gate = (o, g) => {
   }
   const gm = o.style === 'wood' || o.style === 'padippura' ? finishMat('wood', o.color || '#7a5230') : colorMat(o.color || '#22252a', 0.4, 0.7);
   if (o.style === 'sliding') {
-    const leaf = gateLeaf('slats', ow, h - 0.05, gm, 1, ow);
-    leaf.position.set(-ow / 2 + ((o.open || 0) / 100) * ow, 0.05, -0.15);
-    g.add(leaf, boxB(ow * 2 + 0.2, 0.03, 0.06, METAL_DARK(), ow / 2, 0, -0.15));
+    // the leaf rolls along its track; in Spectate it slides open as you walk up to it
+    const slider = new THREE.Group(), leaf = gateLeaf('slats', ow, h - 0.05, gm, 1, ow);
+    leaf.position.set(-ow / 2, 0.05, -0.15); slider.add(leaf);
+    slider.position.x = ((o.open || 0) / 100) * ow;
+    slider.userData.slideDoor = { id: o.id, x0: -ow / 2, x1: ow / 2, travel: ow - 0.15, z: -0.15, h: h - 0.05, rest: slider.position.x };
+    slider.userData.passable = 'door';
+    g.add(slider, boxB(ow * 2 + 0.2, 0.03, 0.06, METAL_DARK(), ow / 2, 0, -0.15));
     return;
   }
   const a = Math.min(100, o.open || 0) * DEG;
   for (const [sx, e] of [[-1, 1], [1, -1]]) {
-    const pivot = new THREE.Group();
+    // each leaf swings on its hinge pillar; in Spectate it is pushed open like a door
+    const pivot = new THREE.Group(), lw = ow / 2 - 0.02;
     pivot.position.set((sx * ow) / 2, 0.05, 0);
     pivot.rotation.y = e * a;
-    pivot.add(gateLeaf(o.style, ow / 2 - 0.02, h - 0.05, gm, e, ow));
+    pivot.add(gateLeaf(o.style, lw, h - 0.05, gm, e, ow));
+    pivot.userData.doorLeaf = { id: o.id, e, lw, h: h - 0.05, designAngle: pivot.rotation.y };
+    pivot.userData.passable = 'door';
     g.add(pivot);
   }
 };
@@ -964,6 +1002,7 @@ B.shrub = (o, g) => {
   const rnd = seeded(seedOf(o)), R = o.w / 2, mat = colorMat(o.color || '#4f7f3a', 0.9, 0, { flatShading: true });
   for (let i = 0; i < 3; i++) {
     const m = blob(R * (0.55 + rnd() * 0.2), rnd, mat), a = rnd() * 6.28, d = i ? R * 0.35 : 0;
+    m.userData.passable = false; // a bush is dense enough to stop you
     m.position.set(Math.cos(a) * d, o.h * 0.45, Math.sin(a) * d); m.scale.y = o.h / (R * 1.3); g.add(m);
   }
 };
@@ -1343,6 +1382,7 @@ B.rocks = (o, g) => {
   const rnd = seeded(seedOf(o)), m = colorMat('#8f8a82', 0.95, 0, { flatShading: true });
   for (let i = 0; i < 5; i++) {
     const s = 0.2 + rnd() * 0.35, r = blob(s, rnd, m);
+    r.userData.passable = false; // stones are solid
     r.scale.set(o.w / 2.5, (o.h || 0.6) / 0.8, o.d / 2.5); r.position.set((rnd() - 0.5) * o.w * 0.6, s * 0.4, (rnd() - 0.5) * o.d * 0.6); g.add(r);
   }
 };

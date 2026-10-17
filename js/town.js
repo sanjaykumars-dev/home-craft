@@ -226,7 +226,10 @@ function planLevel(F, H, L, spec) {
     if (r.row === 'hall') continue;
     const wallAB = r.row === 'back' ? A : B, yW = r.row === 'back' ? yA : yB, rw = r.x1 - r.x0;
     if (r.type === 'stair' || r.type === 'stairwell') {
-      const ow = Math.min(1.3, rw - 0.5), at = r.entry === 'left' ? r.x0 + 0.3 + ow / 2 : r.entry === 'right' ? r.x1 - 0.3 - ow / 2 : (r.x0 + r.x1) / 2;
+      let ow = Math.min(1.3, rw - 0.5), at = r.entry === 'left' ? r.x0 + 0.3 + ow / 2 : r.entry === 'right' ? r.x1 - 0.3 - ow / 2 : (r.x0 + r.x1) / 2;
+      // on the ground floor the opening is centred on the line you walk onto the stairs
+      if (r.type === 'stair' && r.stairs === 'spiral') { ow = 1.2; at = r.x0 + INSET + 0.95 + 0.57; }
+      if (r.type === 'stair' && r.stairs === 'stairs') { ow = 1.0; at = r.x0 + INSET + 0.5; }
       F.open(wallAB, 'door-arch', at, { width: ow, height: 2.4 }); zoneH(at, yW, ow, 0.9);
       continue;
     }
@@ -285,8 +288,9 @@ function planLevel(F, H, L, spec) {
       } else if (L === 0 && r.type === 'garage') {
         F.open(S, 'door-garage', cx, { width: Math.min(2.6, rw - 0.6), color: H.garageColor || '#e7e3dc' }); zoneH(cx, y1, 2.6); fit.zones[fit.zones.length - 1].soft = true;
       } else if (L === 1 && r.balcony) {
-        const bw = Math.min(2.2, rw - 1.0);
+        const bw = Math.min(2.2, rw - 1.0), key = typeof r.balcony === 'string' ? r.balcony : 'balcony', bd = mk(key).d;
         F.open(S, 'door-sliding', cx, { width: bw, height: 2.2, frameColor: H.winFrame || '#3a3f47' }); zoneH(cx, y1, bw);
+        F.put(key, cx, y1 + ET / 2 + bd / 2, { level: 1, w: +Math.min(rw - 0.3, Math.max(bw + 1.0, 3.0)).toFixed(2), color: H.railColor || '#2f343b' });
       } else if (frontAt(cx)) win(frontAt(cx), cx, rw);
     }
     if (r.row !== 'hall' && r.i === 0) win(W, cy, rd);
@@ -318,11 +322,12 @@ function planLevel(F, H, L, spec) {
     if (r.type !== 'stair') continue;
     const st = mk(r.stairs), rw = r.x1 - r.x0, rd = r.y1 - r.y0;
     if (r.stairs === 'stairs') {
-      // straight flight along the room, starting at the left end and climbing to a landing on the right
-      const len = Math.min(rw - 1.3, 4.6);
-      F.item({ ...st, level: L, w: 1.05, d: len, h: LH, rot: 90, x: r.x0 + INSET + len / 2, y: r.y1 - INSET - 0.55, finish: H.stairFinish || st.finish });
+      // straight flight along the room: a 0.9 m landing at the foot (left), a 1 m landing at the top (right)
+      const len = Math.min(rw - 2 * INSET - 1.9, 4.6);
+      F.item({ ...st, level: L, w: 1.05, d: len, h: LH, rot: 90, x: r.x0 + INSET + 0.9 + len / 2, y: r.y1 - INSET - 0.55, finish: H.stairFinish || st.finish });
     } else if (r.stairs === 'spiral') {
-      F.item({ ...st, level: L, w: 1.9, d: 1.9, h: LH, x: (r.x0 + r.x1) / 2, y: r.y0 + INSET + 0.95 });
+      // you walk on at the right side heading in, and step off behind it after one turn: front-left corner
+      F.item({ ...st, level: L, w: 1.9, d: 1.9, h: LH, x: r.x0 + INSET + 0.95, y: r.y1 - INSET - 0.95 });
     } else {
       const sw = Math.min(st.w, rw - (r.stairs === 'stairs-u' ? 0.3 : 1.25)), sd = Math.min(st.d, rd - 0.3);
       F.item({ ...st, level: L, w: sw, d: sd, h: LH, x: r.x1 - INSET - sw / 2, y: r.y0 + INSET + sd / 2, finish: H.stairFinish || st.finish });
@@ -406,7 +411,7 @@ const HOUSES = [
     portico: 'portico-modern', porticoOver: { w: 3.0 },
     plot: { gate: 'gate-slide', gateX: 5.8, boundary: 'boundary-rail', driveTo: 15.4, driveFinish: 'concrete',
       garden: [['pool', 2.1, 9.0, { w: 6, d: 3.0, rot: 90 }], ['palm', 1.6, 22.5], ['palm', 18.4, 22.5], ['pot-palm', 9.6, 17.8], ['pot-palm', 12.0, 17.8], ['rocks', 17.6, 17.6], ['lawn', 13.5, 21.5, { w: 9, d: 6 }],
-        ['balcony', 6.5, 15.4 + 0.8 + ET / 2, { level: 1, w: 4.4, d: 1.6, rail: 'glass', color: '#2f343b' }], ['frame', 13.6, 15.4 + 0.25 + ET / 2, { level: 1, w: 4.6, d: 0.5, h: 3.0, z: 0.05, color: '#2f343b' }],
+['frame', 13.6, 15.4 + 0.25 + ET / 2, { level: 1, w: 4.6, d: 0.5, h: 3.0, z: 0.05, color: '#2f343b' }],
         ['clad-stone', 12.0, 15.4 + ET / 2 + 0.03, { w: 1.1, h: 3.1 }], ['louvers', 16.2, 9.0, { rot: 90, w: 2.4, h: 2.8, level: 1, z: 0.1 }],
         ['watertank', 13.0, 4.4, { level: 1, z: LH + 0.3 }], ['solar', 8.0, 5.6, { level: 1, z: LH + 0.3, w: 4.4 }], ['acunit', 16.45, 12.2, { rot: 90 }]] } },
 
@@ -416,7 +421,7 @@ const HOUSES = [
     ground: { back: [{ type: 'kitchen', w: 3.8 }, { type: 'stair', w: 4.3, stairs: 'stairs-l', entry: 'right' }, { type: 'toilet', w: 2.0 }, { type: 'store' }],
       front: [{ type: 'study', name: 'Library', w: 3.4 }, { type: 'living' }, { type: 'bedroom', name: 'Guest room', w: 3.4, bed: 'bed-double', spread: '#7c2d12', wardrobe: 'wardrobe-2' }] },
     upper: { hall: 'lounge', hallName: 'Upper hall', back: [{ type: 'bedroom', w: 3.8, bed: 'bed-queen', spread: '#14532d' }, { type: 'stairwell', w: 4.3, entry: 'left' }, { type: 'toilet', w: 2.0 }, { type: 'utility', name: 'Laundry' }],
-      front: [{ type: 'bedroom', name: 'Bedroom 3', w: 3.4, bed: 'bed-double', spread: '#1e3a8a' }, { type: 'master', bed: 'bed', spread: '#7c2d12', extras: ['dressing'] }, { type: 'bedroom', name: 'Bedroom 4', w: 3.4, bed: 'bed-single', spread: '#9c7a55', extras: ['desk'] }] },
+      front: [{ type: 'bedroom', name: 'Bedroom 3', w: 3.4, bed: 'bed-double', spread: '#1e3a8a', balcony: 'balcony-iron' }, { type: 'master', bed: 'bed', spread: '#7c2d12', extras: ['dressing'] }, { type: 'bedroom', name: 'Bedroom 4', w: 3.4, bed: 'bed-single', spread: '#9c7a55', extras: ['desk'], balcony: 'balcony-iron' }] },
     sofa: 'sofa', fabric: '#7c2d12', table: 'dining6', tableColor: '#5a3a22', roof: 'roof-gable', roofOver: { pitch: 32, overhang: 0.5, finish: 'shingles', color: '#3f444b', gableColor: '#b5654a' },
     portico: 'portico-colonial', porticoOver: { w: 4.6, h: 5.9, color: '#ffffff' }, mainDoorOver: { width: 1.5, height: 2.4, color: '#1f2937' },
     plot: { gate: 'gate-iron', gateX: 17.2, boundary: 'boundary-brick', boundaryOver: { h: 1.4 }, carport: true, carColor: '#1e3a8a', driveTo: 13.2,
@@ -429,11 +434,11 @@ const HOUSES = [
     ground: { back: [{ type: 'kitchen', w: 3.6 }, { type: 'stair', w: 4.1, stairs: 'stairs-w', entry: 'right' }, { type: 'toilet' }],
       front: [{ type: 'bedroom', name: 'Parents room', w: 3.6, bed: 'bed-queen', spread: '#7a5c48' }, { type: 'living' }, { type: 'pooja', w: 1.8 }] },
     upper: { hall: 'lounge', back: [{ type: 'bedroom', name: 'Kids room', w: 3.6, bed: 'bed-single', spread: '#16a34a', extras: ['desk'] }, { type: 'stairwell', w: 4.1, entry: 'left' }, { type: 'toilet' }],
-      front: [{ type: 'master', w: 5.6, balcony: true, bed: 'bed', spread: '#6a4a3a', wardrobe: 'wardrobe', extras: ['cot', 'dressing'] }, { type: 'study', name: 'Reading room' }] },
+      front: [{ type: 'master', w: 5.6, balcony: 'balcony-iron', bed: 'bed', spread: '#6a4a3a', wardrobe: 'wardrobe', extras: ['cot', 'dressing'] }, { type: 'study', name: 'Reading room', balcony: 'balcony-iron' }] },
     sofa: 'sofa', fabric: '#8a7d6b', table: 'dining4', fridge: 'fridge', roof: 'roof-kerala', roofOver: { pitch: 30, overhang: 0.8, color: '#a84c32', gableColor: '#4a2c18' },
     portico: 'portico-kgable', porticoOver: { w: 3.6 }, mainDoorOver: { width: 1.3, height: 2.2, color: '#6b4226' },
     plot: { gate: 'gate-arch', gateX: 16.2, boundary: 'boundary', carport: true, carColor: '#64748b', driveTo: 13.0,
-      garden: [['balcony-iron', 4.3, 14.4 + 0.6 + ET / 2, { level: 1, w: 3.2, d: 1.2 }], ['clad-wood', 9.0, 14.4 + ET / 2 + 0.025, { w: 2.0, h: 3.1 }],
+      garden: [['clad-wood', 9.0, 14.4 + ET / 2 + 0.025, { w: 2.0, h: 3.1 }],
         ['pergola', 4.6, 21.0, { w: 4, d: 3 }], ['sitout-sofa', 4.6, 21.0], ['banana', 13.6, 1.8], ['banana', 15.2, 2.4], ['banana', 17.4, 1.6], ['bamboo', 1.2, 1.4], ['gulmohar', 10.6, 22.6],
         ['flowerbed-round', 8.4, 18.6, { w: 1.6, d: 1.6 }], ['pot', 6.4, 16.0], ['pot', 11.2, 16.0], ['acunit', 12.75, 6.0, { rot: 90 }]] } },
 
@@ -461,25 +466,25 @@ const HOUSES = [
         ['gulmohar', 1.4, 24.0, { w: 5, d: 5 }], ['shrub', 13.2, 16.0], ['pot', 7.6, 17.0], ['tree', 9.0, 1.4, { w: 3.6, d: 3.6, h: 5 }]] } },
 
   // 7. Duplex: balcony portico, spiral stairs, flat roof, louvers, solar
-  { name: 'Helix — contemporary duplex', x0: 3.0, y0: 3.4, w: 10, d: 11, db: 3.8, dh: 3.6,
+  { name: 'Helix — contemporary duplex', x0: 3.0, y0: 3.4, w: 10.8, d: 11, db: 3.8, dh: 3.6,
     walls: { finish: 'plaster', color: '#e9edf1' }, door: { color: '#334155', frame: '#1f2937' }, winFrame: '#1f2937', win: 'win-sliding', floorFinish: 'marble', floorColor: '#ffffff',
-    ground: { back: [{ type: 'kitchen', w: 3.4 }, { type: 'stair', w: 2.4, stairs: 'spiral' }, { type: 'toilet', w: 2.0, wc: 'wc-indian' }, { type: 'store' }],
+    ground: { back: [{ type: 'kitchen', w: 3.4 }, { type: 'stair', w: 3.3, stairs: 'spiral', entry: 'right' }, { type: 'toilet', w: 2.0, wc: 'wc-indian' }, { type: 'store' }],
       front: [{ type: 'living', w: 5.6 }, { type: 'bedroom', name: 'Bedroom 1', bed: 'bed-queen', spread: '#475569' }] },
-    upper: { hall: 'lounge', back: [{ type: 'bedroom', name: 'Bedroom 3', w: 3.4, bed: 'bed-single', spread: '#db2777', extras: ['desk'] }, { type: 'stairwell', w: 2.4 }, { type: 'toilet', w: 2.0, vanity: true }, { type: 'utility' }],
-      front: [{ type: 'master', w: 5.6, balcony: true, bed: 'bed', spread: '#1f2937', wardrobe: 'wardrobe-slide' }, { type: 'bedroom', name: 'Bedroom 2', bed: 'bed-double', spread: '#0e7490' }] },
+    upper: { hall: 'lounge', back: [{ type: 'bedroom', name: 'Bedroom 3', w: 3.4, bed: 'bed-single', spread: '#db2777', extras: ['desk'] }, { type: 'stairwell', w: 3.3, entry: 'right' }, { type: 'toilet', w: 2.0, vanity: true }, { type: 'utility' }],
+      front: [{ type: 'master', w: 5.6, bed: 'bed', spread: '#1f2937', wardrobe: 'wardrobe-slide' }, { type: 'bedroom', name: 'Bedroom 2', bed: 'bed-double', spread: '#0e7490', balcony: true }] },
     sofa: 'sofa', fabric: '#334155', table: 'dining6', tableColor: '#1f2937', poojaInLiving: true, roof: 'roof-flat', roofOver: { overhang: 0.4, color: '#cbd5e1' },
     portico: 'portico-balcony', porticoOver: { w: 3.6 }, mainDoor: 'door-single', mainDoorX: 4.6, mainDoorOver: { width: 1.1, height: 2.3, color: '#334155' },
     plot: { gate: 'gate-iron', gateX: 16.6, pedGate: true, boundary: 'boundary', carport: true, carColor: '#991b1b', driveTo: 12.8,
-      garden: [['louvers-h', 10.6, 14.4 + ET / 2 + 0.06, { w: 2.4, h: 2.2, level: 1, z: 0.4 }], ['louvers', 13.06, 7.0, { rot: 90, w: 2.0, h: 2.6 }], ['solar', 8.0, 6.0, { level: 1, z: LH + 0.3 }],
+      garden: [['louvers-h', 7.7, 14.4 + ET / 2 + 0.06, { w: 1.2, h: 2.2, level: 1, z: 0.4 }], ['louvers', 13.86, 7.0, { rot: 90, w: 2.0, h: 2.6 }], ['solar', 8.0, 6.0, { level: 1, z: LH + 0.3 }],
         ['watertank', 4.4, 5.0, { level: 1, z: LH + 0.3 }], ['cypress', 1.0, 15.0], ['cypress', 1.0, 18.0], ['cypress', 1.0, 21.0], ['rocks', 10.6, 21.4], ['pot', 2.4, 16.6], ['lawn', 9.0, 21.0, { w: 6, d: 5 }]] } },
 
   // 8. Compact family home: classical portico, straight stairs, gable roof, ramp, sit-out deck, septic tank
-  { name: 'Nest — compact family home', x0: 2.4, y0: 4.0, w: 10.4, d: 10.6, db: 3.6, dh: 3.6,
+  { name: 'Nest — compact family home', x0: 2.2, y0: 4.0, w: 11.2, d: 10.6, db: 3.6, dh: 3.6,
     walls: { finish: 'plaster', color: '#fdf0d5' }, door: { color: '#92400e', frame: '#f4f1ea' }, winFrame: '#f4f1ea', win: 'win-casement', floorColor: '#efe6d8',
-    ground: { back: [{ type: 'kitchen', w: 3.0 }, { type: 'stair', w: 5.6, stairs: 'stairs', entry: 'left' }, { type: 'toilet', wc: 'wc-indian' }],
+    ground: { back: [{ type: 'kitchen', w: 2.8 }, { type: 'stair', w: 6.6, stairs: 'stairs', entry: 'left' }, { type: 'toilet', wc: 'wc-indian' }],
       front: [{ type: 'bedroom', name: 'Bedroom 1', w: 3.6, bed: 'bed-double', spread: '#92400e', wardrobe: 'wardrobe-2' }, { type: 'living' }] },
-    upper: { hall: 'lounge', back: [{ type: 'bedroom', name: 'Bedroom 3', w: 3.0, bed: 'bed-single', spread: '#7c3aed', wardrobe: 'wardrobe-2' }, { type: 'stairwell', w: 5.6, entry: 'right' }, { type: 'toilet' }],
-      front: [{ type: 'bedroom', name: 'Bedroom 2', w: 5.2, bed: 'bed-queen', spread: '#be123c', extras: ['desk'] }, { type: 'study', name: 'Hobby room' }] },
+    upper: { hall: 'lounge', back: [{ type: 'bedroom', name: 'Bedroom 3', w: 2.8, bed: 'bed-single', spread: '#7c3aed', wardrobe: 'wardrobe-2' }, { type: 'stairwell', w: 6.6, entry: 'right' }, { type: 'toilet' }],
+      front: [{ type: 'bedroom', name: 'Bedroom 2', w: 5.2, bed: 'bed-queen', spread: '#be123c', extras: ['desk'], balcony: 'balcony-iron' }, { type: 'study', name: 'Hobby room' }] },
     sofa: 'sofa-2', fabric: '#a16207', table: 'dining4', fridge: 'fridge', roof: 'roof-gable', roofOver: { pitch: 28, overhang: 0.5, color: '#7f1d1d', finish: 'clay', gableColor: '#fdf0d5' },
     portico: 'portico', porticoOver: { w: 3.4 }, mainDoorOver: { width: 1.3, color: '#92400e' },
     plot: { gate: 'gate-ped', gateX: 'door', noDrive: true, boundary: 'boundary', boundaryOver: { h: 1.5 },
