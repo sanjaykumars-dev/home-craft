@@ -22,7 +22,7 @@
 import * as THREE from 'three';
 import { store, levelElev } from './state.js';
 import { floorPoly, pointInPoly } from './catalog.js';
-import { makeCharacter, loadMocapCharacter } from './character.js';
+import { makeCharacter, preloadCharacter } from './character.js';
 
 export const PHYSICS = {
   radius: 0.25, height: 1.75, eye: 1.62,
@@ -95,24 +95,17 @@ export class Player {
     });
   }
 
-  start(spawn) {
+  async start(spawn) {
     const v = this.view;
+    if (this.starting) return;
+    // wait for the real figure; the simple one is only a fallback if it can't be loaded
+    if (!this.body) { this.starting = true; this.body = (await preloadCharacter()) || makeCharacter(); this.starting = false; }
     if (v.elev) v.setElevation(null);
     if (v.walk) v.setWalk(false);
     v.tour?.active && v.tour.stop();
     this.saved = { pos: v.camera.position.clone(), target: v.controls.target.clone() };
     v.controls.enabled = false;
-    this.body ??= makeCharacter();
     v.scene.add(this.body);
-    // swap in the motion-captured figure as soon as it has loaded (the simple figure covers the wait)
-    if (!this.body.userData.mocap) {
-      loadMocapCharacter().then((m) => {
-        if (!m) return;
-        const old = this.body;
-        this.body = m;
-        if (old.parent) { old.parent.add(m); old.parent.remove(old); }
-      });
-    }
     this.body.visible = true;
     v.forceNoRoof = undefined; v.forceLevel = undefined;
     v.rebuild();

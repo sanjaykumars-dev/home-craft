@@ -690,7 +690,7 @@ async function startTour() {
   const por = store.doc.objects.find((o) => o.type === 'portico' && o.level === 0);
   const sx = por ? por.x : ws.length ? (x0 + x1) / 2 : 0, sz = por ? por.y + por.d / 2 + 3.2 : ws.length ? y1 + 4 : 5;
   const THREE = await import('three');
-  view.player.start({ pos: new THREE.Vector3(sx, 0, sz), yaw: 0 });
+  await busy($('#btn-tour'), 'Loading character…', () => view.player.start({ pos: new THREE.Vector3(sx, 0, sz), yaw: 0 }));
   const panel = $('#ph-physics-panel');
   panel.innerHTML = '';
   const rows = [['Body', `capsule ${PHYSICS.radius * 2} m wide × ${PHYSICS.height} m tall`], ['Steering', `A/D turn ${PHYSICS.turnRate} rad/s, backwards at ${Math.round(PHYSICS.backFactor * 100)} %, camera follows the face`], ['Walk / run', `${PHYSICS.walk} / ${PHYSICS.run} m/s (accel ${PHYSICS.accel} m/s²)`],
@@ -705,7 +705,13 @@ async function startAutoTour() {
   view.player?.active && view.player.stop();
   const { Tour } = await import('./tour.js');
   view.tour ??= new Tour(view, app);
-  view.tour.start();
+  await busy($('#ph-auto'), 'Loading guide…', () => view.tour.start());
+}
+// show a loading label on a button while the character downloads (instant once preloaded)
+async function busy(btn, label, fn) {
+  const text = btn.textContent;
+  btn.disabled = true; btn.textContent = label;
+  try { await fn(); } finally { btn.disabled = false; btn.textContent = text; }
 }
 
 async function exportPdf() {
@@ -773,6 +779,8 @@ import('./view3d.js').then(({ View3D }) => {
   view.rebuild();
   view.frame();
   $('#loading3d').classList.add('hidden');
+  // fetch the Spectate character in the background so it's ready when Spectate is pressed
+  setTimeout(() => import('./character.js').then((c) => c.preloadCharacter()), 1500);
 }).catch((err) => {
   console.error(err);
   const el = $('#loading3d');

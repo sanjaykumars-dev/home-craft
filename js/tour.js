@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { store, levelElev, wallsOn, openingsOf, wallLen, wallAng, levelCentroid, outwardSign, fmtLen, fmtArea, getObj, baseElev } from './state.js';
 import { floorPoly, polyArea, stairCheck, labelForObj } from './catalog.js';
-import { makeCharacter, loadMocapCharacter } from './character.js';
+import { makeCharacter, preloadCharacter } from './character.js';
 
 const $ = (s) => document.querySelector(s);
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -203,7 +203,14 @@ export class Tour {
   }
 
   // ------------------------------------------------------------ playback
-  start() {
+  async start() {
+    if (this.starting) return;
+    // the guide is a light-grey motion-captured figure; the simple one is only a fallback
+    if (!this.guide) {
+      this.starting = true;
+      this.guide = (await preloadCharacter({ body: '#e7e2d9', joints: '#4b5563' })) || makeCharacter({ helmet: true, clipboard: true, shirt: '#e8eef5' });
+      this.starting = false;
+    }
     const v = this.view;
     if (v.elev) v.setElevation(null);
     if (v.walk) v.setWalk(false);
@@ -212,17 +219,6 @@ export class Tour {
     this.active = true; this.playing = true;
     v.controls.enabled = false;
     v.el.classList.add('touring');
-    this.guide ??= makeCharacter({ helmet: true, clipboard: true, shirt: '#e8eef5' });
-    if (!this.guide.userData.mocap && !this.loadingGuide) {
-      // the guide becomes a light-grey motion-captured figure once loaded
-      this.loadingGuide = true;
-      loadMocapCharacter({ body: '#e7e2d9', joints: '#4b5563' }).then((m) => {
-        if (!m) return;
-        const old = this.guide; this.guide = m;
-        m.position.copy(old.position); m.rotation.copy(old.rotation); m.visible = old.visible;
-        if (old.parent) { old.parent.add(m); old.parent.remove(old); }
-      });
-    }
     v.scene.add(this.guide);
     this.guide.visible = false;
     $('#tour').hidden = false;

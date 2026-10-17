@@ -131,6 +131,14 @@ function makeBlender(A, mixer, after, cadence = 1) {
   };
 }
 
+// One shared download per colour scheme, so Spectate can start loading the figure before it is needed.
+const preloads = new Map();
+export function preloadCharacter(opts = {}) {
+  const key = JSON.stringify(opts);
+  if (!preloads.has(key)) preloads.set(key, loadMocapCharacter(opts).catch(() => null));
+  return preloads.get(key);
+}
+
 export async function loadMocapCharacter({ body = '#d8b99a', joints = '#6b4a36' } = {}) {
   // a VRM avatar placed at assets/character.vrm takes priority
   try {
