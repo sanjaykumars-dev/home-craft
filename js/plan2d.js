@@ -15,6 +15,8 @@ const typedLen = (s) => {
 };
 const chordHalf = (w) => Math.hypot(w.x2 - w.x1, w.y2 - w.y1) / 2;
 const SLABS = new Set(['floor', 'paving', 'flowerbed']);
+// long thin items edited by their two ends, like walls (one end stays pinned while you drag the other)
+const LINEAR = new Set(['boundary', 'fence', 'hedge']);
 // drawing order: the type's layer plus the user's bring-forward / send-back offset
 const zOrder = (o) => (TYPES[o.type]?.z2d ?? 5) + (o.zb || 0);
 const signedArea = (pts) => pts.reduce((s, [x1, y1], i) => { const [x2, y2] = pts[(i + 1) % pts.length]; return s + x1 * y2 - x2 * y1; }, 0) / 2;
@@ -71,6 +73,7 @@ export class Plan2D {
       if (!store.dragKey) return;
       e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
       Object.assign(this.mouse, this.evPos(e), { inside: true });
+      this.alignMarks = []; this.placePoint(store.dragKey, this.mouse);
       this.dragOver = true; this.redraw();
     });
     canvas.addEventListener('dragleave', () => { this.dragOver = false; this.redraw(); });
@@ -78,7 +81,8 @@ export class Plan2D {
       e.preventDefault(); this.dragOver = false;
       const key = store.dragKey || e.dataTransfer.getData('text/plain');
       store.dragKey = null;
-      const p = this.snapPoint(this.evPos(e));
+      const p = this.placePoint(key, this.evPos(e));
+      this.alignMarks = [];
       if (key) this.app.placeAt(key, p.x, p.y);
     });
     const loop = () => { if (this.dirty) { this.dirty = false; this.draw(); } requestAnimationFrame(loop); };
@@ -284,12 +288,75 @@ export class Plan2D {
       if (dx < tol && dy > tol && (!ax || dx < ax.d)) ax = { v: x, from: [x, y], d: dx };
       if (dy < tol && dx > tol && (!ay || dy < ay.d)) ay = { v: y, from: [x, y], d: dy };
     }
+    if (store.tool === 'wall') {
+      // straight walls: their centre line and both faces, and the offsets that put the new wall's face on them
+      const T = (store.wallKind === 'interior' ? 0.12 : 0.25) / 2;
+      for (const w of wallsOn(store.level)) {
+        if (wallArc(w) || w.hidden) continue;
+        const t = w.thickness / 2, vert = Math.abs(w.x2 - w.x1) < 1e-4, horiz = Math.abs(w.y2 - w.y1) < 1e-4;
+        const offs = [0, -t, t, -t - T, -t + T, t - T, t + T];
+        if (vert) for (const k of offs) { const v = w.x1 + k, dx = Math.abs(p.x - v); if (dx < tol * 0.8 && (!ax || dx < ax.d)) ax = { v, from: [v, Math.max(Math.min(w.y1, w.y2), Math.min(Math.max(w.y1, w.y2), p.y))], d: dx }; }
+        if (horiz) for (const k of offs) { const v = w.y1 + k, dy = Math.abs(p.y - v); if (dy < tol * 0.8 && (!ay || dy < ay.d)) ay = { v, from: [Math.max(Math.min(w.x1, w.x2), Math.min(Math.max(w.x1, w.x2), p.x)), v], d: dy }; }
+      }
+    }
     return { x: ax, y: ay };
+  }
+  // Axis-aligned bounds of an item (any rotation).
+  aabb(o, x = o.x, y = o.y) {
+    if (o.type === 'wall') {
+      const poly = this.wallPoly(o), dx = x - o.x1, dy = y - o.y1;
+      return { x0: Math.min(...poly.map((q) => q[0])) + dx, x1: Math.max(...poly.map((q) => q[0])) + dx, y0: Math.min(...poly.map((q) => q[1])) + dy, y1: Math.max(...poly.map((q) => q[1])) + dy };
+    }
+    const r = ((o.rot || 0) * Math.PI) / 180, c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r)), hw = (o.w * c + o.d * s) / 2, hd = (o.w * s + o.d * c) / 2;
+    return { x0: x - hw, x1: x + hw, y0: y - hd, y1: y + hd };
+  }
+  // Lines things can line up with on this storey: item edges and centres, wall faces (inner and outer) and
+  // centre lines, wall ends. Each carries the extent it spans, for drawing the guide.
+  alignRefs(exclude = new Set()) {
+    const xs = [], ys = [];
+    for (const o of store.doc.objects) {
+      if (o.level !== store.level || o.hidden || exclude.has(o.id) || o.wallId || o.type === 'guide' || o.type === 'dimension') continue;
+      if (o.type === 'wall') {
+        if (wallArc(o)) continue;
+        const t = o.thickness / 2, xa = Math.min(o.x1, o.x2), xb = Math.max(o.x1, o.x2), ya = Math.min(o.y1, o.y2), yb = Math.max(o.y1, o.y2);
+        if (xb - xa < 1e-4) for (const k of [-t, 0, t]) xs.push({ v: o.x1 + k, a: ya, b: yb, wall: true });
+        if (yb - ya < 1e-4) for (const k of [-t, 0, t]) ys.push({ v: o.y1 + k, a: xa, b: xb, wall: true });
+        for (const [x, y] of [[o.x1, o.y1], [o.x2, o.y2]]) { xs.push({ v: x, a: y, b: y }); ys.push({ v: y, a: x, b: x }); }
+        continue;
+      }
+      if (TYPES[o.type]?.kind !== 'rect' || !o.w) continue;
+      const b = this.aabb(o);
+      for (const v of [b.x0, (b.x0 + b.x1) / 2, b.x1]) xs.push({ v, a: b.y0, b: b.y1 });
+      for (const v of [b.y0, (b.y0 + b.y1) / 2, b.y1]) ys.push({ v, a: b.x0, b: b.x1 });
+    }
+    return { xs, ys };
+  }
+  // Snap a moving box so one of its edges or its centre meets a reference line; returns the nudge and guides.
+  smartSnap(b, refs) {
+    const tol = 7 / this.scale;
+    let bx = null, by = null;
+    for (const c of [b.x0, (b.x0 + b.x1) / 2, b.x1]) for (const r of refs.xs) { const d = r.v - c; if (Math.abs(d) < tol && (!bx || Math.abs(d) < Math.abs(bx.d) - 1e-9)) bx = { d, r }; }
+    for (const c of [b.y0, (b.y0 + b.y1) / 2, b.y1]) for (const r of refs.ys) { const d = r.v - c; if (Math.abs(d) < tol && (!by || Math.abs(d) < Math.abs(by.d) - 1e-9)) by = { d, r }; }
+    const dx = bx?.d || 0, dy = by?.d || 0, marks = [];
+    if (bx) marks.push({ from: [bx.r.v, Math.min(bx.r.a, b.y0 + dy)], to: [bx.r.v, Math.max(bx.r.b, b.y1 + dy)], line: true });
+    if (by) marks.push({ from: [Math.min(by.r.a, b.x0 + dx), by.r.v], to: [Math.max(by.r.b, b.x1 + dx), by.r.v], line: true });
+    return { dx, dy, sx: !!bx, sy: !!by, marks };
   }
   aligned(p, al) {
     const x = al.x ? al.x.v : snapVal(p.x), y = al.y ? al.y.v : snapVal(p.y);
     this.alignMarks = [al.x && { from: al.x.from, to: [x, y] }, al.y && { from: al.y.from, to: [x, y] }].filter(Boolean);
     return { x, y };
+  }
+  // Where a palette item would land: its edges or centre lined up with what is already there, else the grid.
+  placePoint(key, p) {
+    this.placePt = null;
+    if (!this.snapOn()) return { x: p.x, y: p.y };
+    const g = this.ghostFor(key, p);
+    if (!g || g.type === 'door' || g.type === 'window' || !g.w) return this.snapPoint(p);
+    const s = this.smartSnap(this.aabb({ ...g, rot: 0 }, p.x, p.y), this.alignRefs());
+    const pt = { x: s.sx ? p.x + s.dx : snapVal(p.x), y: s.sy ? p.y + s.dy : snapVal(p.y) };
+    this.alignMarks = s.marks; this.placePt = pt;
+    return pt;
   }
   // second point of a new guide: a wall corner, or the pointer at a 15 degree step from the first point
   guidePoint(p) {
@@ -364,6 +431,12 @@ export class Plan2D {
     if (TYPES[o.type]?.kind !== 'rect') return null;
     if (o.shape === 'custom' && o.pts) {
       for (let i = 0; i < o.pts.length; i++) if (near(...toWorld(o, ...o.pts[i]))) return { mode: 'vertex', o, i };
+    }
+    if (LINEAR.has(o.type)) {
+      for (const e of [-1, 1]) {
+        const [ex, ey] = toWorld(o, (e * o.w) / 2, 0);
+        if (near(ex, ey)) return { mode: 'linEnd', o, e, fixed: toWorld(o, (-e * o.w) / 2, 0) };
+      }
     }
     const [rx, ry] = toWorld(o, 0, -o.d / 2 - 28 / this.scale);
     if (near(rx, ry)) return { mode: 'rotate', o };
@@ -441,7 +514,7 @@ export class Plan2D {
     }
     switch (store.tool) {
       case 'place': {
-        const s = this.snapPoint(p);
+        const s = this.placePoint(store.armed, p);
         this.app.placeAt(store.armed, s.x, s.y);
         return;
       }
@@ -491,13 +564,24 @@ export class Plan2D {
       default: {
         const h = this.hitHandle(p);
         if (h) { checkpoint(); this.drag = h; return; }
-        const hit = this.hitTest(p);
+        let hit = this.hitTest(p);
         if (!hit) { this.app.select(null); this.drag = { mode: 'pan', sx: p.sx, sy: p.sy, ox: this.ox, oy: this.oy }; return; }
-        if (store.selectedId !== hit.id) this.app.select(hit.id);
         checkpoint();
+        let copied = false;
+        if (e.altKey && !hit.locked) {
+          // Alt+drag: leave the original and drag a copy
+          e.preventDefault();
+          const c = { ...structuredClone(hit), id: uid() };
+          store.doc.objects.push(c);
+          if (hit.type === 'wall') for (const op of openingsOf(hit.id)) store.doc.objects.push({ ...structuredClone(op), id: uid(), wallId: c.id });
+          hit = c; copied = true;
+          emit('doc');
+          this.app.toast('Copy made — drag it into place');
+        }
+        if (store.selectedId !== hit.id) this.app.select(hit.id);
         if (hit.type === 'wall' || hit.type === 'dimension' || hit.type === 'guide') {
           this.drag = { mode: 'moveWall', o: hit, start: p, orig: { x1: hit.x1, y1: hit.y1, x2: hit.x2, y2: hit.y2 },
-            linked: hit.type === 'wall' ? [...this.linkedAt(hit.x1, hit.y1, hit.id), ...this.linkedAt(hit.x2, hit.y2, hit.id)] : [] };
+            linked: hit.type === 'wall' && !copied ? [...this.linkedAt(hit.x1, hit.y1, hit.id), ...this.linkedAt(hit.x2, hit.y2, hit.id)] : [] };
         } else if (hit.wallId) this.drag = { mode: 'moveOpening', o: hit };
         else this.drag = { mode: 'move', o: hit, start: p, ox: hit.x, oy: hit.y };
       }
@@ -518,8 +602,9 @@ export class Plan2D {
         const h = this.hitHandle(p);
         const hit = h ? null : this.hitTest(p);
         this.hoverId = hit?.id || null;
-        this.c.style.cursor = h ? (h.mode === 'rotate' ? 'alias' : 'nwse-resize') : hit ? 'move' : 'default';
+        this.c.style.cursor = h ? (h.mode === 'rotate' ? 'alias' : h.mode === 'linEnd' || h.mode === 'endpoint' ? 'crosshair' : 'nwse-resize') : hit ? (e.altKey ? 'copy' : 'move') : 'default';
       } else this.c.style.cursor = 'crosshair';
+      if (store.tool === 'place') this.placePoint(store.armed, p);
       if (store.tool === 'wall') this.preview = this.snapWallPoint(p);
       else if (store.tool === 'guide') this.preview = this.guidePoint(p);
       else if (store.tool !== 'select') this.snapPoint(p);
@@ -531,13 +616,24 @@ export class Plan2D {
       case 'pan': this.ox = d.ox + p.sx - d.sx; this.oy = d.oy + p.sy - d.sy; this.userMoved = true; break;
       case 'move': {
         let nx = d.ox + p.x - d.start.x, ny = d.oy + p.y - d.start.y;
-        if (snap) { nx = snapVal(nx); ny = snapVal(ny); }
-        d.o.x = nx; d.o.y = ny; emit('doc');
+        if (snap) {
+          d.refs ??= this.alignRefs(new Set([d.o.id]));
+          const s = this.smartSnap(this.aabb(d.o, nx, ny), d.refs);
+          nx = s.sx ? nx + s.dx : snapVal(nx); ny = s.sy ? ny + s.dy : snapVal(ny);
+          this.alignMarks = s.marks;
+        }
+        d.o.x = +nx.toFixed(4); d.o.y = +ny.toFixed(4); emit('doc');
         break;
       }
       case 'moveWall': {
         let dx = p.x - d.start.x, dy = p.y - d.start.y;
-        if (snap) { dx = snapVal(dx); dy = snapVal(dy); }
+        if (snap && d.o.type === 'wall') {
+          d.refs ??= this.alignRefs(new Set([d.o.id, ...d.linked.map((l) => l.w.id)]));
+          const ghost = { ...d.o, x1: d.orig.x1 + dx, y1: d.orig.y1 + dy, x2: d.orig.x2 + dx, y2: d.orig.y2 + dy };
+          const s = this.smartSnap(this.aabb(ghost, ghost.x1, ghost.y1), d.refs);
+          dx = s.sx ? dx + s.dx : snapVal(dx); dy = s.sy ? dy + s.dy : snapVal(dy);
+          this.alignMarks = s.marks;
+        } else if (snap) { dx = snapVal(dx); dy = snapVal(dy); }
         Object.assign(d.o, { x1: d.orig.x1 + dx, y1: d.orig.y1 + dy, x2: d.orig.x2 + dx, y2: d.orig.y2 + dy });
         for (const l of d.linked) { l.w['x' + l.e] = l.ox + dx; l.w['y' + l.e] = l.oy + dy; }
         emit('doc');
@@ -590,6 +686,23 @@ export class Plan2D {
         emit('doc');
         break;
       }
+      case 'linEnd': {
+        // the other end stays where it is; length and angle follow the pointer (15° steps, Shift = free)
+        const [fx, fy] = d.fixed;
+        let pt = snap ? this.snapPoint(p, d.o.id) : { x: p.x, y: p.y };
+        if (snap && !this.snapMark) {
+          const a = Math.atan2(pt.y - fy, pt.x - fx), sa = Math.round(a / (15 * DEG)) * 15 * DEG, L = Math.hypot(pt.x - fx, pt.y - fy);
+          if (Math.abs(a - sa) < 5 * DEG) pt = { x: fx + Math.cos(sa) * snapVal(L), y: fy + Math.sin(sa) * snapVal(L) };
+        }
+        let L = Math.hypot(pt.x - fx, pt.y - fy);
+        const a = Math.atan2(pt.y - fy, pt.x - fx) + (d.e < 0 ? Math.PI : 0);
+        if (isDimLocked(d.o, 'w')) L = d.o.w;
+        if (L < 0.2) break;
+        const ux = Math.cos(a), uy = Math.sin(a), ex = fx + (d.e > 0 ? ux : -ux) * L, ey = fy + (d.e > 0 ? uy : -uy) * L;
+        Object.assign(d.o, { x: +((fx + ex) / 2).toFixed(4), y: +((fy + ey) / 2).toFixed(4), w: +L.toFixed(4), rot: +((((a / DEG) % 360) + 360) % 360).toFixed(2) });
+        emit('doc');
+        break;
+      }
       case 'rotate': {
         let deg = Math.atan2(p.y - d.o.y, p.x - d.o.x) / DEG + 90;
         if (snap) deg = Math.round(deg / 15) * 15;
@@ -612,7 +725,8 @@ export class Plan2D {
     if (d.mode === 'room') this.createRoom(d.a, d.b);
     if (d.mode === 'stairdraw') this.createStairs(d.a, d.b);
     if (d.mode === 'vertex') normalizeCustom(d.o);
-    if (['move', 'moveWall', 'endpoint', 'moveOpening', 'resize', 'rotate', 'vertex', 'bend', 'plotCorner'].includes(d.mode)) { dropIfUnchanged(); emit('doc'); }
+    if (['move', 'moveWall', 'endpoint', 'moveOpening', 'resize', 'rotate', 'vertex', 'bend', 'plotCorner', 'linEnd'].includes(d.mode)) { dropIfUnchanged(); emit('doc'); }
+    this.alignMarks = [];
     this.redraw();
   }
 
@@ -817,9 +931,43 @@ export class Plan2D {
       if (d < bd) { bd = d; best = { w, pr }; }
     }
     if (!best) return;
-    const L = wallLen(best.w);
+    const L = wallLen(best.w), w = best.w;
     let t = best.pr.t * L;
-    if (this.snapOn()) t = snapVal(t, 0.05);
+    if (this.snapOn()) {
+      const vert = Math.abs(w.x2 - w.x1) < 1e-4, horiz = Math.abs(w.y2 - w.y1) < 1e-4, tol = 7 / this.scale;
+      let hit = null;
+      if ((vert || horiz) && !wallArc(w)) {
+        const ax = vert ? 'y' : 'x', s = Math.sign(w[ax + '2'] - w[ax + '1']), at = (u) => w[ax + '1'] + s * u; // along-wall world coordinate
+        const cands = [{ v: at(L / 2), mid: true }];
+        for (const op of store.doc.objects) {
+          if (op.id === o.id || !op.wallId || op.level !== o.level) continue;
+          const ow = getObj(op.wallId);
+          if (!ow || wallArc(ow) || (vert ? Math.abs(ow.x2 - ow.x1) > 1e-4 : Math.abs(ow.y2 - ow.y1) > 1e-4)) continue;
+          const os = Math.sign(ow[ax + '2'] - ow[ax + '1']), c = ow[ax + '1'] + os * op.t, cross = vert ? ow.x1 : ow.y1;
+          for (const v of [c - op.width / 2, c, c + op.width / 2]) cands.push({ v, cross });
+        }
+        // cross walls meeting this one: line the opening up with their faces or centre
+        for (const cw of wallsOn(store.level)) {
+          if (cw.id === w.id || wallArc(cw)) continue;
+          const perp = vert ? Math.abs(cw.y2 - cw.y1) < 1e-4 : Math.abs(cw.x2 - cw.x1) < 1e-4;
+          if (!perp) continue;
+          const c = vert ? cw.y1 : cw.x1, ct = cw.thickness / 2;
+          for (const v of [c - ct, c, c + ct]) cands.push({ v, cross: vert ? (cw.x1 + cw.x2) / 2 : (cw.y1 + cw.y2) / 2 });
+        }
+        const here = at(t);
+        for (const k of [-o.width / 2, 0, o.width / 2]) for (const c of cands) {
+          const d = c.v - (here + s * k);
+          if (Math.abs(d) < tol && (!hit || Math.abs(d) < Math.abs(hit.d))) hit = { d, c };
+        }
+        if (hit) {
+          t += s * hit.d;
+          const v = hit.c.v, own = vert ? w.x1 : w.y1, other = hit.c.mid ? own : hit.c.cross;
+          this.alignMarks = [{ from: vert ? [own, v] : [v, own], to: vert ? [other ?? own, v] : [v, other ?? own], line: true }];
+          if (hit.c.mid) this.snapMark = vert ? { x: own, y: v } : { x: v, y: own };
+        }
+      }
+      if (!hit) t = snapVal(t, 0.05);
+    }
     o.wallId = best.w.id;
     o.t = L <= o.width ? L / 2 : Math.max(o.width / 2, Math.min(L - o.width / 2, t));
   }
@@ -1254,6 +1402,12 @@ export class Plan2D {
     const [a1, b1] = this.w2s(tx, ty), [a2, b2] = this.w2s(rx, ry);
     this.ctx.strokeStyle = ACCENT; this.ctx.lineWidth = 1.5; this.ctx.beginPath(); this.ctx.moveTo(a1, b1); this.ctx.lineTo(a2, b2); this.ctx.stroke();
     this.handle(rx, ry, true);
+    if (LINEAR.has(o.type)) {
+      // end handles: drag one end, the other stays pinned
+      for (const e of [-1, 1]) this.handle(...toWorld(o, (e * o.w) / 2, 0), true);
+      this.dimLine(toWorld(o, -o.w / 2, -o.d / 2 - off), toWorld(o, o.w / 2, -o.d / 2 - off), fmtLen(o.w), ACCENT, true, { kind: 'itemW', o, value: o.w });
+      return;
+    }
     for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) this.handle(...toWorld(o, (sx * o.w) / 2, (sy * o.d) / 2));
   }
 
@@ -1283,8 +1437,9 @@ export class Plan2D {
     // alignment lines back to the corner the pointer lines up with
     for (const m of this.alignMarks || []) {
       const [x1, y1] = this.w2s(...m.from), [x2, y2] = this.w2s(...m.to);
-      ctx.strokeStyle = '#db2777'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = '#db2777'; ctx.lineWidth = 1; ctx.setLineDash(m.line ? [] : [3, 3]);
       ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+      if (m.line) { for (const [x, y] of [[x1, y1], [x2, y2]]) { ctx.beginPath(); ctx.moveTo(x - 3, y - 3); ctx.lineTo(x + 3, y + 3); ctx.moveTo(x + 3, y - 3); ctx.lineTo(x - 3, y + 3); ctx.stroke(); } continue; }
       ctx.beginPath(); ctx.moveTo(x1 - 4, y1 - 4); ctx.lineTo(x1 + 4, y1 + 4); ctx.moveTo(x1 + 4, y1 - 4); ctx.lineTo(x1 - 4, y1 + 4); ctx.stroke();
     }
     // the wall line being snapped to, and a right-angle mark for a perpendicular snap
@@ -1395,7 +1550,7 @@ export class Plan2D {
     // placement ghost
     const key = store.tool === 'place' ? store.armed : this.dragOver ? store.dragKey : null;
     if (key && this.mouse.inside) {
-      const p = this.snapOn() ? { x: snapVal(this.mouse.x), y: snapVal(this.mouse.y) } : this.mouse;
+      const p = this.placePt || (this.snapOn() ? { x: snapVal(this.mouse.x), y: snapVal(this.mouse.y) } : this.mouse);
       const g = this.ghostFor(key, p);
       if (g) {
         ctx.save(); ctx.globalAlpha = 0.65;
