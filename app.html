@@ -59,6 +59,7 @@
         <button class="tool" data-tool="measure" title="Measure distance (M)"><span class="ti" data-icon="measure"></span>Measure</button>
         <button class="tool" data-tool="dimension" title="Add a permanent dimension line (D)"><span class="ti" data-icon="measure"></span>Dimension</button>
         <button class="tool" data-tool="room" title="Draw a plain room (E)"><span class="ti" data-icon="room"></span>Room</button>
+        <button class="tool" data-tool="guide" title="Lay a locked guide line to draw walls over (G)"><span class="ti" data-icon="guide"></span>Guide</button>
       </div>
       <div class="seg scope" id="scope-seg" title="Workspace: edit the inside or the outside of the house">
         <button data-scope="all">All</button><button data-scope="indoor">🛋 Indoor</button><button data-scope="outdoor">🌳 Outdoor</button>
@@ -80,6 +81,7 @@
           <button data-toggle="dims" title="Show dimensions">Dimensions</button>
           <button data-act="dimset" title="Dimension settings: what to show, measuring rule, precision, snap">⚙</button>
           <button data-toggle="grid" title="Show grid">Grid</button>
+          <button data-toggle="guides" title="Show guide lines (walls snap to visible guides)">Guides</button>
           <button data-toggle="snap" title="Snap to grid & corners (hold Shift to bypass)">Snap</button>
           <span class="sep"></span>
           <button data-act="png" title="Download the plan as an image">PNG</button>
@@ -102,7 +104,8 @@
           <button data-toggle="upper" title="Show storeys above the current level">Upper floors</button>
           <span class="sep"></span>
           <label class="sun" title="Time of day (sun position)">☀<input type="range" id="sun" min="6" max="19" step="0.25" value="15.5"><span id="sun-val">15:30</span></label>
-          <button data-act="shot" title="Download a photo of the 3D view">Photo</button>
+          <button data-act="camera" title="Camera: frame a shot, choose size and lens, take snaps (C)">📷 Camera</button>
+          <button data-act="full" title="Full screen 3D view (Esc to leave)">⛶ Full screen</button>
         </div>
         <div class="walk-help">Walk mode · <b>W A S D</b> move · drag to look · <b>Shift</b> run · <b>Q/E</b> down/up · <b>Esc</b> exit</div>
         <div class="loading" id="loading3d">Loading 3D engine…</div>

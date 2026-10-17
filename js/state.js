@@ -21,7 +21,7 @@ export const store = {
   armed: null,         // catalog key when tool === 'place'
   wallKind: 'exterior',
   dragKey: null,       // catalog key being dragged from the palette
-  view: { dims: true, snap: true, grid: true, roof: true, upper: true, mode: 'split' },
+  view: { dims: true, snap: true, grid: true, guides: true, roof: true, upper: true, mode: 'split' },
 };
 
 // ---------- events ----------

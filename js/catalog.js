@@ -7,6 +7,8 @@ const ic = (body) =>
 
 export const ICONS = {
   select: ic('<path d="M13 8l22 13-10 2.5 6 11.5-4.5 2.2-6-11.6-7.5 7z" fill="currentColor" stroke="none"/>'),
+  guide: ic('<path d="M4 34L44 14" stroke-dasharray="5 3.5" stroke="#0891b2" stroke-width="2.4"/><circle cx="14" cy="29" r="3.2" fill="#0891b2" stroke="none"/><circle cx="34" cy="19" r="3.2" fill="#0891b2" stroke="none"/>'),
+  guideGrid: ic('<path d="M16 6v36M32 6v36M6 16h36M6 32h36" stroke-dasharray="4 3" stroke="#0891b2" stroke-width="2"/><circle cx="16" cy="6" r="3.4" fill="#fff" stroke="#0891b2" stroke-width="1.6"/><circle cx="32" cy="6" r="3.4" fill="#fff" stroke="#0891b2" stroke-width="1.6"/>'),
   measure: ic('<rect x="5" y="17" width="38" height="14" rx="2" transform="rotate(-30 24 24)"/><path d="M15 31.5l-2-3.4M20 28.6l-3-5.2M25 25.7l-2-3.4M30 22.8l-3-5.2M35 19.9l-2-3.4"/>'),
   wallExt: ic('<rect x="5" y="19" width="38" height="10" fill="currentColor" stroke="none"/><path d="M5 15v18M43 15v18" stroke-width="1.6"/>'),
   wallInt: ic('<rect x="5" y="22" width="38" height="4.5" fill="currentColor" stroke="none"/><path d="M5 17v14M43 17v14" stroke-width="1.6"/>'),
@@ -88,6 +90,11 @@ export const ICONS = {
   bathtub: ic('<path d="M4 24h40v6a10 10 0 0 1-10 10H14A10 10 0 0 1 4 30z"/><path d="M10 24V10a4 4 0 0 1 8 0" /><path d="M12 40l-2 4M36 40l2 4"/>'),
   washer: ic('<rect x="8" y="5" width="32" height="38" rx="3"/><circle cx="24" cy="27" r="10"/><circle cx="24" cy="27" r="5" stroke-width="1.4"/><path d="M13 11h6M33 11h1"/>'),
   pooja: ic('<path d="M8 42V22L24 6l16 16v20z"/><path d="M18 42V30a6 6 0 0 1 12 0v12"/><path d="M24 22c-2 2-2 4 0 6 2-2 2-4 0-6z" fill="currentColor"/><path d="M22 4h4" />'),
+  nightstand: ic('<rect x="12" y="14" width="24" height="24" rx="2"/><path d="M12 26h24M22 20h4M22 32h4"/>'),
+  dressing: ic('<rect x="6" y="28" width="36" height="12" rx="1"/><ellipse cx="24" cy="16" rx="9" ry="11"/><path d="M24 34h0"/>'),
+  coffeetable: ic('<rect x="6" y="16" width="36" height="16" rx="4"/><path d="M14 32v6M34 32v6"/>'),
+  floorlamp: ic('<path d="M16 16h16l-4-10H20z"/><path d="M24 16v24M16 42h16"/>'),
+  sofaL: ic('<path d="M6 10h24v16h12v14H6z"/><path d="M6 16h18v24M30 26v14"/>'),
   wardrobe: ic('<rect x="8" y="4" width="32" height="40" rx="1"/><path d="M24 4v40M20 22v4M28 22v4"/>'),
   tvunit: ic('<rect x="8" y="8" width="32" height="20" rx="2"/><path d="M4 38h40v4H4zM18 28l-2 10M30 28l2 10"/>'),
   desk: ic('<path d="M4 18h40M8 18v24M40 18v24M28 18v12h12"/><rect x="12" y="6" width="12" height="9" rx="1"/>'),
@@ -583,9 +590,19 @@ export const TYPES = {
   },
   sofa: {
     label: 'Sofa', kind: 'rect', z2d: 3,
-    props: [...POS, W, D, color('color', 'Fabric')],
+    props: [...POS, W, D, select('shape', 'Shape', [['straight', 'Straight'], ['lshape', 'L-shaped (chaise on the right)']]), color('color', 'Fabric')],
     draw2d(ctx, o, P) {
       const { w, d } = o;
+      if (o.shape === 'lshape') {
+        // seat run along the back, chaise down the right side
+        const s = Math.min(0.95, d * 0.6), c = Math.min(0.95, w * 0.45);
+        ctx.beginPath(); ctx.moveTo(-w / 2, -d / 2); ctx.lineTo(w / 2, -d / 2); ctx.lineTo(w / 2, d / 2); ctx.lineTo(w / 2 - c, d / 2); ctx.lineTo(w / 2 - c, -d / 2 + s); ctx.lineTo(-w / 2, -d / 2 + s); ctx.closePath();
+        ctx.fillStyle = o.color; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke();
+        ctx.fillStyle = 'rgba(0,0,0,.15)';
+        ctx.fillRect(-w / 2, -d / 2, w, 0.2); ctx.fillRect(w / 2 - 0.2, -d / 2, 0.2, d); ctx.fillRect(-w / 2, -d / 2, 0.2, s);
+        ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.moveTo(w / 2 - c, -d / 2 + s); ctx.lineTo(w / 2 - 0.2, -d / 2 + s); ctx.stroke();
+        return;
+      }
       rr(ctx, -w / 2, -d / 2, w, d, 0.08); ctx.fillStyle = o.color; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke();
       ctx.fillStyle = 'rgba(0,0,0,.15)';
       ctx.fillRect(-w / 2, -d / 2, w, 0.2); ctx.fillRect(-w / 2, -d / 2, 0.2, d); ctx.fillRect(w / 2 - 0.2, -d / 2, 0.2, d);
@@ -820,8 +837,9 @@ Object.assign(TYPES, {
   }),
   bathtub: fx('Bathtub', [], (ctx, o, P) => { outline(ctx, o, P); rr(ctx, -o.w / 2 + 0.08, -o.d / 2 + 0.08, o.w - 0.16, o.d - 0.16, 0.25); ctx.strokeStyle = LINE; ctx.stroke(); }),
   washer: fx('Washing machine', [], (ctx, o, P) => { outline(ctx, o, P); ctx.beginPath(); ctx.arc(0, 0.03, Math.min(o.w, o.d) * 0.32, 0, 7); ctx.stroke(); }),
-  wardrobe: fx('Wardrobe', [H, color('color', 'Colour')], (ctx, o, P) => {
+  wardrobe: fx('Wardrobe', [H, bool('sliding', 'Sliding doors'), color('color', 'Colour')], (ctx, o, P) => {
     outline(ctx, o, P, '#efe7da');
+    if (o.sliding) { ctx.strokeStyle = 'rgba(59,66,80,.6)'; ctx.beginPath(); ctx.moveTo(-o.w / 2, o.d / 2 - 0.06); ctx.lineTo(0.05, o.d / 2 - 0.06); ctx.moveTo(-0.05, o.d / 2 - 0.12); ctx.lineTo(o.w / 2, o.d / 2 - 0.12); ctx.stroke(); return; }
     ctx.strokeStyle = 'rgba(59,66,80,.5)'; ctx.beginPath(); ctx.moveTo(-o.w / 2, -o.d / 2); ctx.lineTo(o.w / 2, o.d / 2); ctx.moveTo(-o.w / 2, o.d / 2); ctx.lineTo(o.w / 2, -o.d / 2); ctx.stroke();
   }),
   tvunit: fx('TV unit', [color('color', 'Colour')], (ctx, o, P) => { outline(ctx, o, P, '#d9cbb6'); ctx.fillStyle = '#1f2937'; ctx.fillRect(-o.w * 0.35, -o.d / 2, o.w * 0.7, 0.05); }),
@@ -836,6 +854,24 @@ Object.assign(TYPES, {
   island: fx('Kitchen island', [color('color', 'Cabinet colour')], (ctx, o, P) => { outline(ctx, o, P, '#e9e6e1'); for (const x of [-o.w / 3, 0, o.w / 3]) { ctx.beginPath(); ctx.arc(x, o.d / 2 + 0.22, 0.17, 0, 7); ctx.stroke(); } }),
   armchair: fx('Armchair', [color('color', 'Fabric')], (ctx, o, P) => { rr(ctx, -o.w / 2, -o.d / 2, o.w, o.d, 0.1); ctx.fillStyle = o.color; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke(); ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.fillRect(-o.w / 2, -o.d / 2, o.w, 0.18); }),
   rug: fx('Rug', [color('color', 'Colour')], (ctx, o, P) => { rr(ctx, -o.w / 2, -o.d / 2, o.w, o.d, 0.05); ctx.fillStyle = o.color; ctx.globalAlpha *= 0.7; ctx.fill(); ctx.globalAlpha /= 0.7; ctx.strokeStyle = 'rgba(0,0,0,.2)'; ctx.lineWidth = P; ctx.stroke(); }, 2),
+  nightstand: fx('Bedside table', [color('color', 'Colour')], (ctx, o, P) => { outline(ctx, o, P, '#d9c3a5'); ctx.beginPath(); ctx.arc(0, 0, Math.min(o.w, o.d) * 0.22, 0, 7); ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.stroke(); }),
+  dressing: fx('Dressing table', [color('color', 'Colour')], (ctx, o, P) => {
+    outline(ctx, o, P, '#e2cfb2');
+    ctx.fillStyle = '#c9d6df'; ctx.fillRect(-o.w * 0.3, -o.d / 2, o.w * 0.6, 0.04);
+    rr(ctx, -0.2, o.d / 2 + 0.06, 0.4, 0.34, 0.12); ctx.fillStyle = '#e5e0d6'; ctx.fill(); ctx.strokeStyle = LINE; ctx.stroke();
+  }),
+  cot: fx('Baby cot', [color('color', 'Colour')], (ctx, o, P) => {
+    outline(ctx, o, P, o.color);
+    ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.beginPath();
+    for (let x = -o.w / 2 + 0.08; x < o.w / 2; x += 0.08) { ctx.moveTo(x, -o.d / 2); ctx.lineTo(x, -o.d / 2 + 0.05); ctx.moveTo(x, o.d / 2); ctx.lineTo(x, o.d / 2 - 0.05); }
+    ctx.stroke(); rr(ctx, -o.w / 2 + 0.08, -o.d / 2 + 0.1, o.w - 0.16, 0.25, 0.06); ctx.fillStyle = '#fff'; ctx.fill(); ctx.stroke();
+  }),
+  coffeetable: fx('Coffee table', [color('color', 'Colour')], (ctx, o, P) => { rr(ctx, -o.w / 2, -o.d / 2, o.w, o.d, 0.08); ctx.fillStyle = '#c7a37c'; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke(); rr(ctx, -o.w / 2 + 0.06, -o.d / 2 + 0.06, o.w - 0.12, o.d - 0.12, 0.05); ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.stroke(); }),
+  shoerack: fx('Shoe rack', [color('color', 'Colour')], (ctx, o, P) => { outline(ctx, o, P, '#d6c0a2'); hLines(ctx, { w: o.w, d: o.d }, P, o.d / 2, 'rgba(0,0,0,.3)'); }),
+  floorlamp: fx('Floor lamp', [color('color', 'Shade colour')], (ctx, o, P) => {
+    ctx.beginPath(); ctx.arc(0, 0, o.w / 2, 0, 7); ctx.fillStyle = o.color; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, 0.04, 0, 7); ctx.fillStyle = '#f59e0b'; ctx.fill();
+  }, 6),
   watertank: fx('Overhead water tank', [H, num('litres', 'Capacity (litres)', { min: 100, step: 100 })], (ctx, o, P) => {
     ctx.beginPath(); ctx.ellipse(0, 0, o.w / 2, o.d / 2, 0, 0, 7); ctx.fillStyle = '#e2e8f0'; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke();
     txt(ctx, P, 'OHT', 0, 0, 8, '#334155', 700);
@@ -848,7 +884,7 @@ Object.assign(TYPES, {
   }, 6),
   acunit: fx('AC outdoor unit', [], (ctx, o, P) => { outline(ctx, o, P, '#f1f5f9'); ctx.beginPath(); ctx.arc(o.w * 0.15, 0, Math.min(o.w, o.d) * 0.35, 0, 7); ctx.stroke(); }, 6),
 });
-for (const t of ['watertank', 'well']) TYPES[t].uniform = true;
+for (const t of ['watertank', 'well', 'floorlamp']) TYPES[t].uniform = true;
 
 // Fittings of a room preset placed inside the rectangle x0..x1 × y0..y1 (world metres).
 export function presetItems(key, x0, y0, x1, y1, level, inset = 0.15) {
@@ -914,6 +950,8 @@ export const CATALOG = [
     { key: 'roof-flat', label: 'Flat roof', icon: 'roofFlat', make: () => ({ type: 'roof', style: 'flat', w: 10, d: 8, pitch: 20, overhang: 0.3, finish: 'concrete', color: '#cfcac2', gableColor: '#efe8dc', z: 3 }) },
     { key: 'column', label: 'Column', icon: 'column', make: () => ({ type: 'column', w: 0.35, d: 0.35, h: 3, shape: 'round', color: '#f3efe7' }) },
     { key: 'dimension', label: 'Dimension line', icon: 'measure', tool: 'dimension', hint: 'Click two points to add a permanent dimension line' },
+    { key: 'guide', label: 'Guide line', icon: 'guide', tool: 'guide', hint: 'Click two points to lay a guide line · walls snap to guides and their crossings' },
+    { key: 'guide-grid', label: 'Guide grid', icon: 'guideGrid', action: 'guideGrid', hint: 'Lay out a grid of guide lines (A, B, C… × 1, 2, 3…) at set spacings' },
   ] },
   { id: 'rooms', label: 'Rooms (furnished)', items: Object.entries({ living: 'sofa', dining: 'table', kitchen: 'kitchen', toilet: 'wc', attached: 'wc', pooja: 'pooja', bedroom: 'bed', master: 'bed', study: 'desk', utility: 'washer', store: 'room' })
     .map(([k, icon]) => ({ key: `room-${k}`, label: ROOM_PRESETS[k].label, icon, tool: 'room', preset: k, hint: `Drag the ${ROOM_PRESETS[k].label.toLowerCase()} in the plan, or click once for the standard ${ROOM_PRESETS[k].w} × ${ROOM_PRESETS[k].d} m size` })) },
@@ -926,18 +964,41 @@ export const CATALOG = [
     { key: 'bathtub', label: 'Bathtub', icon: 'bathtub', make: () => ({ type: 'bathtub', w: 1.7, d: 0.75 }) },
     { key: 'washer', label: 'Washing machine', icon: 'washer', make: () => ({ type: 'washer', w: 0.6, d: 0.6 }) },
   ] },
-  { id: 'interior', label: 'Interior, Dining & Pooja', items: [
-    { key: 'pooja', label: 'Pooja unit', icon: 'pooja', make: () => ({ type: 'pooja', w: 1.1, d: 0.5, h: 1.8, color: '#8a5a33' }) },
-    { key: 'dining6', label: 'Dining (6 seat)', icon: 'table', make: () => ({ type: 'table', w: 1.8, d: 0.9, color: '#9c6b3f' }) },
-    { key: 'dining4', label: 'Dining (4 seat)', icon: 'table', make: () => ({ type: 'table', w: 1.2, d: 0.8, color: '#7a5230' }) },
-    { key: 'wardrobe', label: 'Wardrobe', icon: 'wardrobe', make: () => ({ type: 'wardrobe', w: 1.8, d: 0.6, h: 2.1, color: '#c8b8a2' }) },
-    { key: 'tvunit', label: 'TV unit', icon: 'tvunit', make: () => ({ type: 'tvunit', w: 1.8, d: 0.45, color: '#8a6a4a' }) },
-    { key: 'desk', label: 'Study desk', icon: 'desk', make: () => ({ type: 'desk', w: 1.4, d: 0.7, color: '#b48a5e' }) },
-    { key: 'bookshelf', label: 'Bookshelf', icon: 'bookshelf', make: () => ({ type: 'bookshelf', w: 1.2, d: 0.35, h: 2.0, color: '#8a6a4a' }) },
-    { key: 'fridge', label: 'Refrigerator', icon: 'fridge', make: () => ({ type: 'fridge', w: 0.75, d: 0.7 }) },
-    { key: 'island', label: 'Kitchen island', icon: 'kitchen', make: () => ({ type: 'island', w: 1.8, d: 0.9, color: '#f2f0eb' }) },
+  // Free-standing furniture: place it anywhere and resize it, independent of the furnished room presets.
+  { id: 'bedroom', label: 'Bedroom Furniture', items: [
+    { key: 'bed-single', label: 'Single bed', icon: 'bed', make: () => ({ type: 'bed', w: 0.95, d: 1.95, color: '#5b7a99' }) },
+    { key: 'bed-double', label: 'Double bed', icon: 'bed', make: () => ({ type: 'bed', w: 1.4, d: 1.95, color: '#4a6b8a' }) },
+    { key: 'bed-queen', label: 'Queen bed', icon: 'bed', make: () => ({ type: 'bed', w: 1.6, d: 2.05, color: '#7a5c48' }) },
+    { key: 'bed', label: 'King / master bed', icon: 'bed', make: () => ({ type: 'bed', w: 1.85, d: 2.1, color: '#6a4a3a' }) },
+    { key: 'cot', label: 'Baby cot', icon: 'bed', make: () => ({ type: 'cot', w: 0.7, d: 1.3, color: '#f3ede3' }) },
+    { key: 'nightstand', label: 'Bedside table', icon: 'nightstand', make: () => ({ type: 'nightstand', w: 0.45, d: 0.4, color: '#8a6a4a' }) },
+    { key: 'wardrobe-2', label: 'Wardrobe 2-door', icon: 'wardrobe', make: () => ({ type: 'wardrobe', w: 1.2, d: 0.6, h: 2.1, color: '#c8b8a2' }) },
+    { key: 'wardrobe', label: 'Wardrobe 3-door', icon: 'wardrobe', make: () => ({ type: 'wardrobe', w: 1.8, d: 0.6, h: 2.1, color: '#c8b8a2' }) },
+    { key: 'wardrobe-slide', label: 'Sliding wardrobe', icon: 'wardrobe', make: () => ({ type: 'wardrobe', w: 2.4, d: 0.65, h: 2.4, color: '#e8e2d8', sliding: true }) },
+    { key: 'dressing', label: 'Dressing table', icon: 'dressing', make: () => ({ type: 'dressing', w: 1.0, d: 0.45, color: '#b48a5e' }) },
+    { key: 'desk', label: 'Study desk', icon: 'desk', make: () => ({ type: 'desk', w: 1.2, d: 0.6, color: '#b48a5e' }) },
+    { key: 'bookshelf', label: 'Bookshelf', icon: 'bookshelf', make: () => ({ type: 'bookshelf', w: 1.0, d: 0.35, h: 2.0, color: '#8a6a4a' }) },
+  ] },
+  { id: 'living', label: 'Living Room Furniture', items: [
+    { key: 'sofa', label: 'Sofa 3-seater', icon: 'sofa', make: () => ({ type: 'sofa', w: 2.1, d: 0.9, color: '#7d8a99' }) },
+    { key: 'sofa-2', label: 'Sofa 2-seater', icon: 'sofa', make: () => ({ type: 'sofa', w: 1.5, d: 0.9, color: '#8a7d6b' }) },
+    { key: 'sofa-l', label: 'L-shaped sofa', icon: 'sofaL', make: () => ({ type: 'sofa', shape: 'lshape', w: 2.6, d: 1.7, color: '#6b7684' }) },
     { key: 'armchair', label: 'Armchair', icon: 'sofa', make: () => ({ type: 'armchair', w: 0.85, d: 0.85, color: '#b4a58c' }) },
+    { key: 'coffeetable', label: 'Coffee table', icon: 'coffeetable', make: () => ({ type: 'coffeetable', w: 1.1, d: 0.6, color: '#8a6a4a' }) },
+    { key: 'tvunit', label: 'TV unit', icon: 'tvunit', make: () => ({ type: 'tvunit', w: 1.8, d: 0.45, color: '#8a6a4a' }) },
     { key: 'rug', label: 'Rug', icon: 'floor', make: () => ({ type: 'rug', w: 2.4, d: 1.6, color: '#9c7a55' }) },
+    { key: 'floorlamp', label: 'Floor lamp', icon: 'floorlamp', make: () => ({ type: 'floorlamp', w: 0.4, d: 0.4, color: '#f1e6cf' }) },
+    { key: 'shoerack', label: 'Shoe rack', icon: 'bookshelf', make: () => ({ type: 'shoerack', w: 0.9, d: 0.35, color: '#9a7b5b' }) },
+    { key: 'pooja', label: 'Pooja unit', icon: 'pooja', make: () => ({ type: 'pooja', w: 1.1, d: 0.5, h: 1.8, color: '#8a5a33' }) },
+  ] },
+  { id: 'dining', label: 'Dining & Kitchen', items: [
+    { key: 'dining4', label: 'Dining (4 seat)', icon: 'table', make: () => ({ type: 'table', w: 1.2, d: 0.8, color: '#7a5230' }) },
+    { key: 'dining6', label: 'Dining (6 seat)', icon: 'table', make: () => ({ type: 'table', w: 1.8, d: 0.9, color: '#9c6b3f' }) },
+    { key: 'dining8', label: 'Dining (8 seat)', icon: 'table', make: () => ({ type: 'table', w: 2.4, d: 1.0, color: '#6b4528' }) },
+    { key: 'fridge', label: 'Fridge single door', icon: 'fridge', make: () => ({ type: 'fridge', w: 0.65, d: 0.68 }) },
+    { key: 'fridge-double', label: 'Fridge double door', icon: 'fridge', make: () => ({ type: 'fridge', w: 0.92, d: 0.75 }) },
+    { key: 'kitchen', label: 'Kitchen counter', icon: 'kitchen', make: () => ({ type: 'kitchen', w: 3, d: 0.62, color: '#f2f0eb' }) },
+    { key: 'island', label: 'Kitchen island', icon: 'kitchen', make: () => ({ type: 'island', w: 1.8, d: 0.9, color: '#f2f0eb' }) },
   ] },
   { id: 'services', label: 'Services & Utilities', items: [
     { key: 'watertank', label: 'Water tank (OHT)', icon: 'watertank', make: () => ({ type: 'watertank', w: 1.3, d: 1.3, h: 1.3, litres: 1500, z: 6 }) },
@@ -1046,23 +1107,18 @@ export const CATALOG = [
     { key: 'fountain', label: 'Fountain', icon: 'fountain', make: () => ({ type: 'fountain', w: 2, d: 2, h: 1.4 }) },
     { key: 'rocks', label: 'Garden rocks', icon: 'rocks', make: () => ({ type: 'rocks', w: 1.6, d: 1.2, h: 0.6 }) },
   ] },
-  { id: 'furniture', label: 'Furniture', items: [
-    { key: 'sofa', label: 'Sofa', icon: 'sofa', make: () => ({ type: 'sofa', w: 2.2, d: 0.95, color: '#7d8a99' }) },
-    { key: 'bed', label: 'Bed', icon: 'bed', make: () => ({ type: 'bed', w: 1.8, d: 2.1, color: '#4a6b8a' }) },
-    { key: 'table', label: 'Dining table', icon: 'table', make: () => ({ type: 'table', w: 1.8, d: 0.9, color: '#9c6b3f' }) },
-    { key: 'kitchen', label: 'Kitchen counter', icon: 'kitchen', make: () => ({ type: 'kitchen', w: 3, d: 0.62, color: '#f2f0eb' }) },
-  ] },
 ];
 
 // Indoor / outdoor workspaces: which palette groups show, and which objects are editable.
 const CAT_SCOPE = { structure: 'both', rooms: 'indoor', floors: 'both', doors: 'both', windows: 'both', stairs: 'indoor', bath: 'indoor', interior: 'indoor', furniture: 'indoor',
+  bedroom: 'indoor', living: 'indoor', dining: 'indoor',
   portico: 'outdoor', gates: 'outdoor', facade: 'outdoor', outdoor: 'outdoor', garden: 'outdoor', services: 'outdoor' };
 for (const c of CATALOG) c.scope = CAT_SCOPE[c.id] || 'both';
 const OUTDOOR_TYPES = new Set(['paving', 'tree', 'shrub', 'gate', 'boundary', 'fence', 'car', 'carport', 'pool', 'gazebo', 'lamp', 'hedge', 'flowerbed', 'pot', 'tulsi', 'bench',
   'swing', 'fountain', 'rocks', 'portico', 'pergola', 'well', 'septic', 'sitout', 'roof', 'balcony', 'cladding', 'louvers', 'frame', 'chimney', 'solar', 'watertank', 'acunit']);
 // 'outdoor', 'indoor' or 'structure' (walls, openings, dimensions — editable in both)
 export function objScope(o) {
-  if (o.type === 'wall' || o.wallId || o.type === 'dimension') return 'structure';
+  if (o.type === 'wall' || o.wallId || o.type === 'dimension' || o.type === 'guide') return 'structure';
   if (o.type === 'floor') return 'structure';
   return OUTDOOR_TYPES.has(o.type) ? 'outdoor' : 'indoor';
 }
@@ -1078,6 +1134,7 @@ export function iconForObj(o) {
     gate: { iron: 'gateIron', arch: 'gateArch', wood: 'gateWood', modern: 'gateModern', sliding: 'gateSlide' } };
   if (map[o.type]) return ICONS[map[o.type][o.style]] || ICONS.portico;
   if (o.type === 'dimension') return ICONS.measure;
+  if (o.type === 'guide') return ICONS.guide;
   if (o.type === 'roof') return ICONS[{ gable: 'roofGable', hip: 'roofHip', flat: 'roofFlat' }[o.style]];
   if (o.type === 'floor' && o.shape && o.shape !== 'rect') return ICONS[{ lshape: 'floorL', ushape: 'floorL', parallelogram: 'floorSkew', trapezoid: 'floorSkew' }[o.shape] || 'floorHex'];
   if (o.type === 'paving') return o.slope ? ICONS.ramp : o.finish === 'asphalt' ? ICONS.driveway : ICONS.path;
@@ -1091,6 +1148,7 @@ export function labelForObj(o) {
     return it ? it.label : TYPES[o.type].label;
   }
   if (o.type === 'wall') return o.kind === 'interior' ? 'Interior wall' : 'Exterior wall';
+  if (o.type === 'guide') return o.label ? `Guide ${o.label}` : 'Guide line';
   if (o.type === 'roof') return { gable: 'Gable roof', hip: 'Hip roof', flat: 'Flat roof' }[o.style];
   if (o.type === 'paving') return o.slope ? 'Ramp' : { asphalt: 'Driveway', grass: 'Lawn patch' }[o.finish] || 'Paving';
   if (o.type === 'floor' && o.name) return `Floor · ${o.name}`;
@@ -1147,6 +1205,18 @@ TYPES.dimension = {
     { key: 'length', label: 'Measured length', kind: 'len', min: 0.01, get: (o) => Math.hypot(o.x2 - o.x1, o.y2 - o.y1), set: 'dimLength' },
     len('offset', 'Offset from points', { min: -50 }), text('label', 'Text override'),
     select('color', 'Colour', [['#334155', 'Charcoal'], ['#1d4ed8', 'Blue'], ['#c2410c', 'Orange'], ['#15803d', 'Green'], ['#b91c1c', 'Red']]),
+  ],
+};
+
+// Construction guide line: an infinite line through two points, drawn only in the plan editor.
+// Walls, rooms and dimensions snap to guides and to the points where guides cross.
+TYPES.guide = {
+  label: 'Guide line', kind: 'guide',
+  props: [
+    len('x1', 'Point 1 X', { min: -9999 }), len('y1', 'Point 1 Y', { min: -9999 }), len('x2', 'Point 2 X', { min: -9999 }), len('y2', 'Point 2 Y', { min: -9999 }),
+    num('angle', 'Angle °', { get: (o) => ((Math.round((-Math.atan2(o.y2 - o.y1, o.x2 - o.x1) * 180) / Math.PI * 100) / 100) + 360) % 360, set: 'guideAngle', step: 1 }),
+    text('label', 'Grid label'),
+    select('color', 'Colour', [['#0891b2', 'Cyan'], ['#db2777', 'Magenta'], ['#ea580c', 'Orange'], ['#16a34a', 'Green'], ['#7c3aed', 'Violet']]),
   ],
 };
 

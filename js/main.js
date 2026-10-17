@@ -28,6 +28,7 @@ const app = {
   setTool,
   placeAt,
   toast,
+  addGuide,
   showCoords(x, y) { $('#status-coords').textContent = `X ${fmtLen(x)}   Y ${fmtLen(y)}`; },
   focusProps() { $('#props input, #props select')?.focus(); },
   onWalkChange(onWalk) { $('[data-act=walk]').classList.toggle('on', onWalk); },
@@ -59,11 +60,12 @@ const HINTS = {
   measure: 'Drag between any two points to measure (snaps to wall faces and openings)',
   dimension: 'Click the first point, then the second, to add a permanent dimension line · double-click any dimension to type a value',
   stairdraw: 'Drag the stair area — the steps re-flow to fit · a single click places a standard size',
+  guide: 'Click two points to lay a guide line (15° steps, Shift = free) · guides lock in place · walls snap to guides and crossings',
 };
 function setTool(tool, opts = {}) {
   if (store.tool === 'wall' && tool !== 'wall') plan.finishDraft();
   if (tool !== 'measure') plan.measure = null;
-  plan.dimDraft = null;
+  plan.dimDraft = null; plan.guideDraft = null;
   store.tool = tool;
   store.armed = tool === 'place' ? opts.armed : null;
   if (tool === 'stairdraw') { store.stairShape = opts.stairShape || 'straight'; store.stairKey = opts.key; }
@@ -82,7 +84,7 @@ function setTool(tool, opts = {}) {
   $$('.card').forEach((c) => {
     const it = CATALOG_INDEX[c.dataset.key];
     c.classList.toggle('active', (tool === 'place' && store.armed === it.key) || (tool === 'wall' && it.tool === 'wall' && it.wallKind === store.wallKind && !!it.curve === !!store.wallCurve)
-      || ((tool === 'stairdraw' || tool === 'room') && (store.stairKey === it.key || store.roomKey === it.key) && it.tool === tool) || (tool === 'room' && !store.roomPreset && it.key === 'room') || (tool === 'dimension' && it.tool === tool));
+      || ((tool === 'stairdraw' || tool === 'room') && (store.stairKey === it.key || store.roomKey === it.key) && it.tool === tool) || (tool === 'room' && !store.roomPreset && it.key === 'room') || ((tool === 'dimension' || tool === 'guide') && it.tool === tool));
   });
   plan.c.style.cursor = tool === 'select' ? 'default' : 'crosshair';
   plan.redraw();
@@ -108,14 +110,14 @@ function exteriorBounds(level) {
   return { x0, y0, x1, y1 };
 }
 
-function placeAt(key, x, y) {
+function placeAt(key, x, y, { onWall } = {}) {
   const it = CATALOG_INDEX[key];
   if (!it) return;
   if (it.tool && !it.make) { setTool(it.tool, { wallKind: it.wallKind }); return; }
   const lvl = store.doc.levels[store.level];
   const o = { id: uid(), level: store.level, rot: 0, ...it.make() };
   if (o.type === 'door' || o.type === 'window') {
-    const nw = nearestWall(x, y);
+    const nw = onWall ? { w: onWall.wall, pr: projectToWall(onWall.x, onWall.y, onWall.wall) } : nearestWall(x, y);
     if (!nw) { toast('Doors and windows go on a wall — drop it onto a wall', true); return; }
     const L = wallLen(nw.w);
     o.wallId = nw.w.id;
@@ -136,6 +138,70 @@ function placeAt(key, x, y) {
   emit('doc'); emit('selection');
   if (store.tool === 'place' || store.tool === 'stairdraw') setTool('select');
   toast(`${it.label} added`);
+}
+
+// ------------------------------------------------------------------ guide lines
+// New guides are locked straight away so they can't be nudged while walls are drawn over them.
+function addGuide(a, b, extra = {}) {
+  checkpoint();
+  const o = { id: uid(), type: 'guide', level: store.level, x1: +a.x.toFixed(4), y1: +a.y.toFixed(4), x2: +b.x.toFixed(4), y2: +b.y.toFixed(4), color: '#0891b2', locked: true, ...extra };
+  store.doc.objects.push(o);
+  if (store.view.guides === false) { store.view.guides = true; syncToggles(); }
+  store.selectedId = o.id;
+  emit('doc'); emit('selection');
+  toast('Guide placed and locked · walls snap to it · unlock it in Properties to move it');
+  return o;
+}
+// Turn a guide into a wall between its two points.
+function wallOnGuide(g, kind) {
+  checkpoint();
+  const w = plan.newWall({ x: g.x1, y: g.y1 }, { x: g.x2, y: g.y2 }, kind);
+  w.level = g.level;
+  store.doc.objects.push(w);
+  store.selectedId = w.id;
+  emit('doc'); emit('selection');
+  toast(`${kind === 'interior' ? 'Interior' : 'Exterior'} wall built on the guide · ${fmtLen(wallLen(w))}`);
+}
+// A copy of the guide moved sideways by an exact distance.
+function parallelGuide(g) {
+  const v = prompt(`Distance for the parallel guide (${unitLabel()}). Use a negative value for the other side.`, String(+toUnit(1).toFixed(3)));
+  const d = fromUnit(parseFloat(v));
+  if (!d) return;
+  const L = Math.hypot(g.x2 - g.x1, g.y2 - g.y1) || 1, nx = (-(g.y2 - g.y1) / L) * d, ny = ((g.x2 - g.x1) / L) * d;
+  addGuide({ x: g.x1 + nx, y: g.y1 + ny }, { x: g.x2 + nx, y: g.y2 + ny }, { color: g.color, label: '' });
+}
+// Structural grid: vertical guides 1, 2, 3… and horizontal guides A, B, C… at the given spacings.
+function openGuideGrid() {
+  const ws = wallsOn(store.level);
+  const x0 = ws.length ? Math.min(...ws.flatMap((w) => [w.x1, w.x2])) : 0, y0 = ws.length ? Math.min(...ws.flatMap((w) => [w.y1, w.y2])) : 0;
+  const u = (m) => +toUnit(m).toFixed(3);
+  const inp = (id, value, ph) => h('input', { id, type: 'text', value, placeholder: ph, style: 'width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px' });
+  const row = (label, el, note) => h('div', { style: 'margin:12px 0' }, h('label', { style: 'display:block;font-weight:600;margin-bottom:4px' }, label), el, note ? h('p', { class: 'note' }, note) : null);
+  const ft = store.doc.units === 'ft';
+  const fx = inp('gg-x', ft ? '10, 12, 10' : '3, 4, 3', 'e.g. 3, 4, 3'), fy = inp('gg-y', ft ? '12, 12' : '4, 4', 'e.g. 4, 4');
+  const ox = inp('gg-ox', String(u(x0))), oy = inp('gg-oy', String(u(y0)));
+  const build = () => {
+    const list = (el) => el.value.split(/[,;\s]+/).map(parseFloat).filter((n) => n > 0).map(fromUnit);
+    const sx = list(fx), sy = list(fy), bx = fromUnit(parseFloat(ox.value) || 0), by = fromUnit(parseFloat(oy.value) || 0);
+    const xs = [bx, ...sx.map((_, i) => bx + sx.slice(0, i + 1).reduce((a, b) => a + b, 0))];
+    const ys = [by, ...sy.map((_, i) => by + sy.slice(0, i + 1).reduce((a, b) => a + b, 0))];
+    const xEnd = xs[xs.length - 1], yEnd = ys[ys.length - 1];
+    checkpoint();
+    xs.forEach((x, i) => store.doc.objects.push({ id: uid(), type: 'guide', level: store.level, x1: +x.toFixed(4), y1: +by.toFixed(4), x2: +x.toFixed(4), y2: +(yEnd > by ? yEnd : by + 1).toFixed(4), label: String(i + 1), color: '#0891b2', locked: true }));
+    ys.forEach((y, i) => store.doc.objects.push({ id: uid(), type: 'guide', level: store.level, x1: +bx.toFixed(4), y1: +y.toFixed(4), x2: +(xEnd > bx ? xEnd : bx + 1).toFixed(4), y2: +y.toFixed(4), label: String.fromCharCode(65 + (i % 26)), color: '#0891b2', locked: true }));
+    store.view.guides = true; syncToggles();
+    emit('doc'); closeModal();
+    toast(`Guide grid placed: ${xs.length} × ${ys.length} lines, locked · draw walls along it`);
+  };
+  openModal(h('div', { class: 'modal-h' }, h('h2', {}, 'Guide grid'), h('button', { class: 'x', onclick: closeModal }, '✕')),
+    h('div', { style: 'max-width:460px' },
+      h('p', { class: 'note' }, `Lay out the setting-out grid first, then draw walls over it. Spacings are in ${unitLabel()}, separated by commas.`),
+      row('Spacings between vertical lines (1, 2, 3…)', fx, 'Three spacings make four lines.'),
+      row('Spacings between horizontal lines (A, B, C…)', fy),
+      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px' }, row(`Start X (${unitLabel()})`, ox), row(`Start Y (${unitLabel()})`, oy)),
+      h('p', { class: 'note' }, 'The start defaults to the top-left wall corner on this storey. All grid lines are locked when placed.'),
+      h('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px' }, h('button', { onclick: closeModal }, 'Cancel'), h('button', { class: 'primary', onclick: build }, 'Place grid'))));
+  fx.focus();
 }
 
 // ------------------------------------------------------------------ lock / hide / layer order
@@ -162,7 +228,7 @@ const TREE_GROUPS = [
   ['Walls', (o) => o.type === 'wall'], ['Doors & windows', (o) => !!o.wallId], ['Rooms & floors', (o) => o.type === 'floor'],
   ['Stairs', (o) => o.type === 'stairs' || o.type === 'spiral'], ['Roof & facade', (o) => ['roof', 'balcony', 'cladding', 'louvers', 'frame', 'chimney', 'column', 'portico'].includes(o.type)],
   ['Furniture & fittings', (o) => objScopeOf(o) === 'indoor'], ['Outdoor & garden', (o) => objScopeOf(o) === 'outdoor'],
-  ['Dimensions', (o) => o.type === 'dimension'],
+  ['Dimensions', (o) => o.type === 'dimension'], ['Guides', (o) => o.type === 'guide'],
 ];
 const groupOf = (o) => TREE_GROUPS.find(([, f]) => f(o))?.[0] || 'Other';
 const treeOpen = new Set(['L0']);
@@ -261,6 +327,7 @@ const GETTERS = {
 export const SETTERS = {
   wallLength: (o, v) => setWallLength(o, Math.max(0.1, v)),
   wallAngle: (o, v) => setWallAngle(o, v),
+  guideAngle: (o, v) => { const L = Math.hypot(o.x2 - o.x1, o.y2 - o.y1) || 1, a = -v * DEG; o.x2 = +(o.x1 + Math.cos(a) * L).toFixed(4); o.y2 = +(o.y1 + Math.sin(a) * L).toFixed(4); },
   dimLength: (o, v) => { const a = Math.atan2(o.y2 - o.y1, o.x2 - o.x1); o.x2 = o.x1 + Math.cos(a) * v; o.y2 = o.y1 + Math.sin(a) * v; },
   openingLeft: (o, v) => { o.t = v + o.width / 2; },
   openingRight: (o, v) => { o.t = wallLen(getObj(o.wallId)) - v - o.width / 2; },
@@ -277,7 +344,8 @@ function buildPalette() {
       const card = h('div', { class: 'card', 'data-key': it.key, title: it.hint || `${it.label} — click, then click the plan; or drag it in`, draggable: it.make ? 'true' : 'false' },
         h('span', { class: 'ci', html: ICONS[it.icon] }), h('span', {}, it.label));
       card.addEventListener('click', () => {
-        if (it.tool) setTool(it.tool, { wallKind: it.wallKind, stairShape: it.stairShape, preset: it.preset, key: it.key, curve: it.curve });
+        if (it.action === 'guideGrid') openGuideGrid();
+        else if (it.tool) setTool(it.tool, { wallKind: it.wallKind, stairShape: it.stairShape, preset: it.preset, key: it.key, curve: it.curve });
         else if (store.tool === 'place' && store.armed === it.key) setTool('select');
         else setTool('place', { armed: it.key });
       });
@@ -395,6 +463,11 @@ function renderProps(force = false) {
     h('button', { onclick: () => rotateSelected(90), title: 'R' }, o.type === 'door' ? 'Flip swing' : o.wallId ? null : 'Rotate 90°'),
     h('button', { class: 'danger', onclick: deleteSelected, title: 'Delete' }, 'Delete'),
   ].filter((b) => b.textContent);
+  if (o.type === 'guide') {
+    acts.unshift(h('button', { onclick: () => wallOnGuide(o, 'exterior'), title: 'Build an exterior wall between the two guide points' }, '🧱 Wall on guide'),
+      h('button', { onclick: () => wallOnGuide(o, 'interior') }, 'Interior wall on guide'),
+      h('button', { onclick: () => parallelGuide(o), title: 'Copy the guide sideways by an exact distance' }, '∥ Parallel guide…'));
+  }
   if (['floor', 'paving', 'flowerbed'].includes(o.type)) {
     if (o.shape !== 'custom') acts.unshift(h('button', { onclick: () => { checkpoint(); o.pts = floorPoly(o).map((p) => [...p]); o.shape = 'custom'; emit('doc'); renderProps(true); toast('Now drag the corners or double-click any side length to type it'); } }, 'Edit every side'));
     else acts.unshift(h('button', { onclick: () => {
@@ -473,7 +546,7 @@ function renderProject(panel) {
     st('Doors', objs.filter((o) => o.type === 'door').length),
     st('Windows', objs.filter((o) => o.type === 'window').length)));
 
-  const keys = [['V', 'Select'], ['W / I', 'Exterior / interior wall'], ['E', 'Room'], ['M', 'Measure'], ['D', 'Dimension line'], ['Dbl-click', 'Type an exact dimension'], ['P', 'Spectate tour'], ['R', 'Rotate 90°'], ['Del', 'Delete'],
+  const keys = [['V', 'Select'], ['W / I', 'Exterior / interior wall'], ['E', 'Room'], ['M', 'Measure'], ['D', 'Dimension line'], ['G', 'Guide line'], ['C', '3D camera'], ['Enter', 'Take a snap (camera open)'], ['Dbl-click', 'Type an exact dimension'], ['P', 'Spectate tour'], ['R', 'Rotate 90°'], ['Del', 'Delete'],
     ['Ctrl D', 'Duplicate'], ['Ctrl Z / Y', 'Undo / redo'], ['Arrows', 'Nudge (Shift ×10)'], ['F', 'Fit plan'], ['1 2 3', '2D / split / 3D'], ['Shift', 'Bypass snapping'], ['Space+drag', 'Pan']];
   panel.append(h('div', { class: 'psec' }, h('h4', {}, 'Shortcuts'), h('div', { class: 'keys' }, keys.flatMap(([k, v]) => [h('kbd', {}, k), h('span', {}, v)]))));
 }
@@ -544,6 +617,7 @@ function setView(mode) {
   $$('#view-seg button').forEach((b) => b.classList.toggle('on', b.dataset.view === mode));
 }
 function syncToggles() {
+  store.view.guides ??= true;
   $$('[data-toggle]').forEach((b) => b.classList.toggle('on', !!store.view[b.dataset.toggle]));
   $('#units-select').value = store.doc.units;
   $('#btn-pro').classList.toggle('on', !!store.view.pro);
@@ -604,7 +678,13 @@ function wire() {
     if (a === 'walk') view.setWalk(!view.walk);
     if (a === 'frame') { view.setWalk(false); view.frame(); }
     if (a === 'top') view.topView();
-    if (a === 'shot') download(fileName('3d.png'), view.snapshot());
+    if (a === 'camera') toggleCamera();
+    if (a === 'full') toggleFullscreen();
+  });
+  document.addEventListener('fullscreenchange', () => {
+    const on = document.fullscreenElement === $('#pane-3d');
+    $('[data-act=full]').classList.toggle('on', on);
+    $('[data-act=full]').textContent = on ? '⛶ Exit full screen' : '⛶ Full screen';
   });
   $('#sun').addEventListener('input', (e) => {
     const v = +e.target.value;
@@ -675,6 +755,24 @@ function openDesigns() {
     h('p', { class: 'note' }, 'Every design is fully editable — change any wall, room, roof, portico or garden item.'), h('div', { class: 'designs' }, cards));
 }
 
+// 3D camera panel (loaded on first use) and full-screen 3D.
+let camera = null;
+async function toggleCamera(force) {
+  if (!view) { toast('The 3D engine is still loading', true); return; }
+  if (!camera) { const { CameraPanel } = await import('./camera.js'); camera = new CameraPanel(view, app); }
+  if (store.view.mode === '2d') setView('split');
+  camera.toggle(force);
+  $('[data-act=camera]').classList.toggle('on', camera.open);
+}
+function toggleFullscreen() {
+  const pane = $('#pane-3d');
+  if (document.fullscreenElement) document.exitFullscreen();
+  else {
+    if (store.view.mode === '2d') setView('split');
+    pane.requestFullscreen?.().catch(() => toast('Full screen is not available in this browser', true));
+  }
+}
+
 // Spectate: a playable character you walk through the house (with collision physics).
 async function startTour() {
   if (!view) { toast('The 3D engine is still loading', true); return; }
@@ -742,7 +840,8 @@ function onKey(e) {
     if (e.key === 'Escape') view.setWalk(false);
     return;
   }
-  if (view?.player?.active || view?.tour?.active) return; // the character uses the keyboard
+  if (camera?.open && e.key === 'Enter' && !plan.draft) { e.preventDefault(); camera.capture(); return; }
+  if (view?.player?.active || view?.tour?.active) { if (e.key === 'c' && !e.ctrlKey) toggleCamera(); return; } // the character uses the rest of the keyboard
   if (plan.onKey(e)) { e.preventDefault(); return; }
   const ctrl = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (ctrl && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
@@ -757,7 +856,7 @@ function onKey(e) {
   const arrows = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
   if (arrows[e.key] && store.selectedId) { e.preventDefault(); nudge(...arrows[e.key]); return; }
   const map = { v: () => setTool('select'), w: () => setTool('wall', { wallKind: 'exterior' }), i: () => setTool('wall', { wallKind: 'interior' }),
-    e: () => setTool('room'), m: () => setTool('measure'), d: () => setTool('dimension'), p: () => startTour(), r: () => rotateSelected(e.shiftKey ? 15 : 90), f: () => plan.fit(),
+    e: () => setTool('room'), m: () => setTool('measure'), d: () => setTool('dimension'), g: () => setTool('guide'), c: () => toggleCamera(), p: () => startTour(), r: () => rotateSelected(e.shiftKey ? 15 : 90), f: () => plan.fit(),
     1: () => setView('2d'), 2: () => setView('split'), 3: () => setView('3d') };
   if (map[k]) { e.preventDefault(); map[k](); }
 }

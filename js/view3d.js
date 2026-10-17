@@ -234,7 +234,7 @@ export class View3D {
   }
 
   // Off-screen render (for the PDF): returns a PNG data URL at the requested pixel size.
-  renderImage(w, h, { camera, elevation, metresWide, fs = 11, overlayScale = 1 } = {}) {
+  renderImage(w, h, { camera, elevation, metresWide, fs = 11, overlayScale = 1, type = 'image/jpeg', quality = 0.9 } = {}) {
     const r = this.renderer, oldSize = r.getSize(new THREE.Vector2()), oldPR = r.getPixelRatio();
     r.setPixelRatio(1); r.setSize(w, h, false);
     let cam = camera || this.camera, img;
@@ -257,7 +257,7 @@ export class View3D {
     } else {
       if (cam.isPerspectiveCamera) { cam = cam.clone(); cam.aspect = w / h; cam.updateProjectionMatrix(); }
       r.render(this.scene, cam);
-      img = r.domElement.toDataURL('image/jpeg', 0.9);
+      img = r.domElement.toDataURL(type, quality);
     }
     r.setPixelRatio(oldPR); r.setSize(oldSize.x, oldSize.y, false);
     return img;
@@ -394,6 +394,14 @@ export class View3D {
     }
     return null;
   }
+  // The wall face under the pointer on this storey, so doors and windows go into the wall you point at
+  // (inside walls too), not the wall nearest to where the ray meets the floor behind it.
+  pickWall(e) {
+    const hit = this.pickId(e);
+    let o = hit && getObj(hit.id);
+    if (o?.wallId) o = getObj(o.wallId);
+    return o?.type === 'wall' && o.level === store.level ? { wall: o, x: hit.point.x, y: hit.point.z } : null;
+  }
   groundPoint(e, y = 0) {
     this.raycaster.setFromCamera(this.ndc(e), this.activeCam);
     const p = new THREE.Vector3();
@@ -411,7 +419,7 @@ export class View3D {
       if (e.button !== 0) return;
       if (store.tool === 'place' && store.armed) {
         const p = this.groundPoint(e, levelElev(store.level));
-        if (p) this.app.placeAt(store.armed, snapVal(p.x), snapVal(p.z));
+        if (p) this.app.placeAt(store.armed, snapVal(p.x), snapVal(p.z), { onWall: this.pickWall(e) });
         e.stopPropagation();
         return;
       }
@@ -486,7 +494,7 @@ export class View3D {
       const key = store.dragKey || e.dataTransfer.getData('text/plain');
       store.dragKey = null;
       const p = this.groundPoint(e, levelElev(store.level));
-      if (key && p) this.app.placeAt(key, snapVal(p.x), snapVal(p.z));
+      if (key && p) this.app.placeAt(key, snapVal(p.x), snapVal(p.z), { onWall: this.pickWall(e) });
     });
   }
 

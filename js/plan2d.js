@@ -13,6 +13,20 @@ const SLABS = new Set(['floor', 'paving', 'flowerbed']);
 const zOrder = (o) => (TYPES[o.type]?.z2d ?? 5) + (o.zb || 0);
 const signedArea = (pts) => pts.reduce((s, [x1, y1], i) => { const [x2, y2] = pts[(i + 1) % pts.length]; return s + x1 * y2 - x2 * y1; }, 0) / 2;
 const ACCENT = '#2563eb';
+const GUIDE = '#0891b2';
+// crossing of two infinite lines given as {x1,y1,x2,y2}; null when parallel
+const lineX = (a, b) => {
+  const d1x = a.x2 - a.x1, d1y = a.y2 - a.y1, d2x = b.x2 - b.x1, d2y = b.y2 - b.y1, den = d1x * d2y - d1y * d2x;
+  if (Math.abs(den) < 1e-9) return null;
+  const t = ((b.x1 - a.x1) * d2y - (b.y1 - a.y1) * d2x) / den;
+  return { x: a.x1 + d1x * t, y: a.y1 + d1y * t };
+};
+// nearest point on the infinite line through a guide
+const projLine = (px, py, g) => {
+  const dx = g.x2 - g.x1, dy = g.y2 - g.y1, t = ((px - g.x1) * dx + (py - g.y1) * dy) / (dx * dx + dy * dy || 1);
+  const x = g.x1 + dx * t, y = g.y1 + dy * t;
+  return { x, y, d: Math.hypot(px - x, py - y) };
+};
 const HANDLE = 9;
 
 export class Plan2D {
@@ -157,23 +171,135 @@ export class Plan2D {
     if (!this.snapOn()) return { x: p.x, y: p.y };
     const ep = this.findEndpoint(p, excludeId);
     if (ep) { this.snapMark = ep; return { ...ep }; }
+    if (store.tool === 'measure' || store.tool === 'dimension') {
+      const from = store.tool === 'measure' ? this.measure?.a : this.dimDraft;
+      const f = this.snapFace(p, from);
+      if (f) { this.snapMark = f; this.snapLine = f; return { x: f.x, y: f.y }; }
+    }
+    const gp = this.snapGuide(p);
+    if (gp) { this.snapMark = gp; return { x: gp.x, y: gp.y }; }
+    if (store.tool !== 'select' && store.tool !== 'place') {
+      const al = this.alignTo(p);
+      if (al.x || al.y) return this.aligned(p, al);
+    }
     return { x: snapVal(p.x), y: snapVal(p.y) };
+  }
+  guides() { return store.view.guides === false ? [] : store.doc.objects.filter((o) => o.type === 'guide' && o.level === store.level && !o.hidden); }
+  // Guide snapping: crossings first (guide x guide, guide x straight wall), then any point on the nearest guide.
+  snapGuide(p) {
+    const gs = this.guides();
+    if (!gs.length) return null;
+    const tol = 10 / this.scale;
+    let best = null, bd = tol * 1.4;
+    const lines = [...gs, ...wallsOn(store.level).filter((w) => !wallArc(w))];
+    for (let i = 0; i < gs.length; i++) for (let j = i + 1; j < lines.length; j++) {
+      const x = lineX(gs[i], lines[j]);
+      if (!x) continue;
+      if (lines[j].type === 'wall' && projectToWall(x.x, x.y, lines[j]).d > 0.01) continue; // only where the wall actually is
+      const d = Math.hypot(p.x - x.x, p.y - x.y);
+      if (d < bd) { bd = d; best = x; }
+    }
+    if (best) return { ...best, kind: 'cross' };
+    let g0 = null, pr0 = null;
+    for (const g of gs) { const pr = projLine(p.x, p.y, g); if (pr.d < tol && (!pr0 || pr.d < pr0.d)) { g0 = g; pr0 = pr; } }
+    if (!g0) return null;
+    let { x, y } = pr0;
+    // along a horizontal or vertical guide, keep snapping to the grid step
+    if (Math.abs(g0.y2 - g0.y1) < 1e-6) x = snapVal(x); else if (Math.abs(g0.x2 - g0.x1) < 1e-6) y = snapVal(y);
+    return { x, y, kind: 'line', g: g0 };
+  }
+  // Wall reference lines: both faces and the centre line of every straight wall on this storey.
+  wallLines() {
+    const out = [];
+    for (const w of wallsOn(store.level)) {
+      if (wallArc(w) || w.hidden) continue;
+      const a = wallAng(w), nx = -Math.sin(a), ny = Math.cos(a);
+      for (const [k, off] of [['centre', 0], ['face', w.thickness / 2], ['face', -w.thickness / 2]]) {
+        out.push({ kind: k, w, x1: w.x1 + nx * off, y1: w.y1 + ny * off, x2: w.x2 + nx * off, y2: w.y2 + ny * off });
+      }
+    }
+    return out;
+  }
+  // Snap onto a wall face or centre line; from a first point, prefer the perpendicular foot (clear widths).
+  snapFace(p, from) {
+    const tol = 10 / this.scale;
+    let best = null;
+    for (const l of this.wallLines()) {
+      if (from) {
+        const f = projectToSegment(from.x, from.y, l.x1, l.y1, l.x2, l.y2);
+        const fx = l.x1 + (l.x2 - l.x1) * f.t, fy = l.y1 + (l.y2 - l.y1) * f.t;
+        const d = Math.hypot(p.x - fx, p.y - fy);
+        if (f.t > 0.001 && f.t < 0.999 && f.d > 0.05 && d < tol * 1.6 && (!best || best.kind !== 'perp' || d < best.dist)) best = { x: fx, y: fy, kind: 'perp', line: l, dist: d };
+      }
+    }
+    if (best) return best;
+    for (const l of this.wallLines()) {
+      const pr = projectToSegment(p.x, p.y, l.x1, l.y1, l.x2, l.y2);
+      const score = pr.d + (l.kind === 'centre' ? 0.3 / this.scale : 0); // faces win ties: measurements are usually face to face
+      if (pr.d < tol && (!best || score < best.dist)) best = { x: l.x1 + (l.x2 - l.x1) * pr.t, y: l.y1 + (l.y2 - l.y1) * pr.t, kind: l.kind, line: l, dist: score };
+    }
+    return best;
+  }
+  // Alignment (tracking) with existing corners: the pointer lines up with a point straight across or straight down.
+  alignTo(p) {
+    if (!this.snapOn()) return {};
+    const tol = 7 / this.scale, pts = [];
+    for (const w of wallsOn(store.level)) pts.push([w.x1, w.y1], [w.x2, w.y2]);
+    if (this.draft) for (const q of this.draft.pts) pts.push([q.x, q.y]);
+    for (const q of [this.measure?.a, this.dimDraft, this.guideDraft]) if (q) pts.push([q.x, q.y]);
+    let ax = null, ay = null;
+    for (const [x, y] of pts) {
+      const dx = Math.abs(p.x - x), dy = Math.abs(p.y - y);
+      if (dx < tol && dy > tol && (!ax || dx < ax.d)) ax = { v: x, from: [x, y], d: dx };
+      if (dy < tol && dx > tol && (!ay || dy < ay.d)) ay = { v: y, from: [x, y], d: dy };
+    }
+    return { x: ax, y: ay };
+  }
+  aligned(p, al) {
+    const x = al.x ? al.x.v : snapVal(p.x), y = al.y ? al.y.v : snapVal(p.y);
+    this.alignMarks = [al.x && { from: al.x.from, to: [x, y] }, al.y && { from: al.y.from, to: [x, y] }].filter(Boolean);
+    return { x, y };
+  }
+  // second point of a new guide: a wall corner, or the pointer at a 15 degree step from the first point
+  guidePoint(p) {
+    const a = this.guideDraft;
+    if (!a) return this.snapPoint(p);
+    if (!this.snapOn()) return { x: p.x, y: p.y };
+    const ep = this.findEndpoint(p);
+    if (ep) { this.snapMark = ep; return { ...ep }; }
+    const L = Math.hypot(p.x - a.x, p.y - a.y), sa = Math.round(Math.atan2(p.y - a.y, p.x - a.x) / (15 * DEG)) * 15 * DEG, Ls = Math.max(snapVal(L), 0.1);
+    return { x: +(a.x + Math.cos(sa) * Ls).toFixed(4), y: +(a.y + Math.sin(sa) * Ls).toFixed(4) };
   }
   snapWallPoint(p) {
     if (!this.snapOn()) return { x: p.x, y: p.y };
     const ep = this.findEndpoint(p);
     if (ep) { this.snapMark = ep; return { ...ep }; }
+    const gp = this.snapGuide(p);
+    if (gp?.kind === 'cross') { this.snapMark = gp; return { x: gp.x, y: gp.y }; }
     const last = this.draft?.pts[this.draft.pts.length - 1];
     if (last) {
       const dx = p.x - last.x, dy = p.y - last.y, L = Math.hypot(dx, dy), a = Math.atan2(dy, dx);
       const sa = Math.round(a / (Math.PI / 4)) * (Math.PI / 4);
       if (Math.abs(a - sa) < 7 * DEG) {
-        const Ls = snapVal(L);
-        return { x: +(last.x + Math.cos(sa) * Ls).toFixed(4), y: +(last.y + Math.sin(sa) * Ls).toFixed(4) };
+        if (gp) {
+          // keep the straight angle and stop exactly on the guide
+          const x = lineX({ x1: last.x, y1: last.y, x2: last.x + Math.cos(sa), y2: last.y + Math.sin(sa) }, gp.g);
+          if (x && Math.hypot(x.x - p.x, x.y - p.y) < 14 / this.scale) { this.snapMark = x; return x; }
+        } else {
+          const Ls = snapVal(L), s = { x: +(last.x + Math.cos(sa) * Ls).toFixed(4), y: +(last.y + Math.sin(sa) * Ls).toFixed(4) };
+          // a horizontal or vertical wall stops where it lines up with another corner
+          const al = this.alignTo(p), horiz = Math.abs(Math.sin(sa)) < 1e-6, vert = Math.abs(Math.cos(sa)) < 1e-6;
+          if (horiz && al.x) { s.x = al.x.v; this.alignMarks = [{ from: al.x.from, to: [s.x, s.y] }]; }
+          if (vert && al.y) { s.y = al.y.v; this.alignMarks = [{ from: al.y.from, to: [s.x, s.y] }]; }
+          return s;
+        }
       }
     }
+    if (gp) { this.snapMark = gp; return { x: gp.x, y: gp.y }; }
     const wl = this.findWallLine(p);
     if (wl) { this.snapMark = wl; return wl; }
+    const al = this.alignTo(p);
+    if (al.x || al.y) return this.aligned(p, al);
     return { x: snapVal(p.x), y: snapVal(p.y) };
   }
 
@@ -194,7 +320,7 @@ export class Plan2D {
     const o = this.app.selected();
     if (!o || o.level !== store.level || o.locked || o.hidden) return null;
     const near = (x, y) => { const [sx, sy] = this.w2s(x, y); return Math.hypot(sx - p.sx, sy - p.sy) < HANDLE; };
-    if (o.type === 'wall' || o.type === 'dimension') {
+    if (o.type === 'wall' || o.type === 'dimension' || o.type === 'guide') {
       const link = (x, y) => (o.type === 'wall' ? this.linkedAt(x, y, o.id) : []);
       if (o.type === 'wall') {
         const m = this.bendPoint(o);
@@ -230,6 +356,7 @@ export class Plan2D {
       for (const op of openingsOf(w.id)) if (Math.abs(u - op.t) <= op.width / 2 && pr.d <= w.thickness / 2 + tol * 2) return op;
     }
     for (const w of walls) if (projectToWall(p.x, p.y, w).d <= w.thickness / 2 + tol) return w;
+    if (store.view.guides !== false) for (const g of objs) if (g.type === 'guide' && projLine(p.x, p.y, g).d < 5 / this.scale) return g;
     const items = objs.filter((o) => TYPES[o.type]?.kind === 'rect').sort((a, b) => zOrder(b) - zOrder(a));
     for (const o of items) {
       const hit = TYPES[o.type].hit;
@@ -294,6 +421,14 @@ export class Plan2D {
         this.drag = { mode: 'measure' };
         return;
       }
+      case 'guide': {
+        const pt = this.guidePoint(p);
+        if (!this.guideDraft) { this.guideDraft = pt; this.redraw(); return; }
+        if (Math.hypot(pt.x - this.guideDraft.x, pt.y - this.guideDraft.y) > 0.02) this.app.addGuide(this.guideDraft, pt);
+        this.guideDraft = null;
+        this.redraw();
+        return;
+      }
       case 'dimension': {
         const pt = this.snapPoint(p);
         if (!this.dimDraft) { this.dimDraft = pt; this.redraw(); return; }
@@ -314,7 +449,7 @@ export class Plan2D {
         if (!hit) { this.app.select(null); this.drag = { mode: 'pan', sx: p.sx, sy: p.sy, ox: this.ox, oy: this.oy }; return; }
         if (store.selectedId !== hit.id) this.app.select(hit.id);
         checkpoint();
-        if (hit.type === 'wall' || hit.type === 'dimension') {
+        if (hit.type === 'wall' || hit.type === 'dimension' || hit.type === 'guide') {
           this.drag = { mode: 'moveWall', o: hit, start: p, orig: { x1: hit.x1, y1: hit.y1, x2: hit.x2, y2: hit.y2 },
             linked: hit.type === 'wall' ? [...this.linkedAt(hit.x1, hit.y1, hit.id), ...this.linkedAt(hit.x2, hit.y2, hit.id)] : [] };
         } else if (hit.wallId) this.drag = { mode: 'moveOpening', o: hit };
@@ -327,7 +462,7 @@ export class Plan2D {
     const p = this.evPos(e);
     Object.assign(this.mouse, p, { inside: true });
     this.shift = e.shiftKey;
-    this.snapMark = null;
+    this.snapMark = null; this.snapLine = null; this.alignMarks = [];
     this.app.showCoords(p.x, p.y);
     const d = this.drag;
     if (!d) {
@@ -338,6 +473,7 @@ export class Plan2D {
         this.c.style.cursor = h ? (h.mode === 'rotate' ? 'alias' : 'nwse-resize') : hit ? 'move' : 'default';
       } else this.c.style.cursor = 'crosshair';
       if (store.tool === 'wall') this.preview = this.snapWallPoint(p);
+      else if (store.tool === 'guide') this.preview = this.guidePoint(p);
       else if (store.tool !== 'select') this.snapPoint(p);
       this.redraw();
       return;
@@ -452,7 +588,7 @@ export class Plan2D {
       }
       if (e.key === 'Escape') { this.finishDraft(); return true; }
     }
-    if (e.key === 'Escape' && (this.measure || this.dimDraft || this.drag?.mode === 'room')) { this.measure = null; this.dimDraft = null; this.drag = null; this.redraw(); return true; }
+    if (e.key === 'Escape' && (this.measure || this.dimDraft || this.guideDraft || this.drag?.mode === 'room')) { this.measure = null; this.dimDraft = null; this.guideDraft = null; this.drag = null; this.redraw(); return true; }
     if (e.key === ' ') { this.space = e.type === 'keydown'; return false; }
     return false;
   }
@@ -668,6 +804,7 @@ export class Plan2D {
     this.drawLevel(store.level, false);
     if (store.view.dims || this.print) this.drawDims();
     if (this.print) return;
+    for (const g of this.guides()) this.drawGuide(g);
     this.drawSelection();
     this.drawTools();
     this.drawScaleBar();
@@ -768,6 +905,38 @@ export class Plan2D {
     ctx.stroke(); ctx.setLineDash([]);
     const L = Math.hypot(o.x2 - o.x1, o.y2 - o.y1);
     this.dimLine(a, b, o.label || fmtLen(L), o.color || '#334155', true, { kind: 'dimobj', o, value: L });
+  }
+
+  // A guide is drawn across the whole view, with its two points marked and an optional grid bubble at the edge.
+  drawGuide(g, color = g.color || GUIDE, lw = 1.1) {
+    const { ctx } = this;
+    this.screenT();
+    const [ax, ay] = this.w2s(g.x1, g.y1), [bx, by] = this.w2s(g.x2, g.y2), L = Math.hypot(bx - ax, by - ay);
+    if (L < 1e-6) return;
+    const ux = (bx - ax) / L, uy = (by - ay) / L, m = 14;
+    // clip the infinite line to the inset view rectangle (Liang-Barsky)
+    let t0 = -1e6, t1 = 1e6;
+    for (const [p, q] of [[-ux, ax - m], [ux, this.W - m - ax], [-uy, ay - m], [uy, this.H - m - ay]]) {
+      if (Math.abs(p) < 1e-9) { if (q < 0) return; continue; }
+      const r = q / p;
+      if (p < 0) t0 = Math.max(t0, r); else t1 = Math.min(t1, r);
+    }
+    if (t0 > t1) return;
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.globalAlpha = g.locked ? 0.8 : 1;
+    ctx.setLineDash(g.locked ? [8, 4] : [4, 3]);
+    ctx.beginPath(); ctx.moveTo(ax + ux * (t0 - m), ay + uy * (t0 - m)); ctx.lineTo(ax + ux * (t1 + m), ay + uy * (t1 + m)); ctx.stroke();
+    ctx.setLineDash([]); ctx.fillStyle = color;
+    for (const [x, y] of [[ax, ay], [bx, by]]) { ctx.beginPath(); ctx.arc(x, y, 2.6, 0, Math.PI * 2); ctx.fill(); }
+    if (g.label) {
+      // grid bubble at the top end of a vertical-ish line, the left end of a horizontal-ish one
+      const e0 = [ax + ux * t0, ay + uy * t0], e1 = [ax + ux * t1, ay + uy * t1], k = Math.abs(uy) > Math.abs(ux) ? 1 : 0;
+      const [cx, cy] = e0[k] <= e1[k] ? e0 : e1;
+      ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = color; ctx.font = '700 10px Inter, system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(g.label).slice(0, 3), cx, cy + 0.5);
+    }
+    ctx.restore();
   }
 
   wallPoly(w) {
@@ -893,6 +1062,7 @@ export class Plan2D {
   }
   outlineObj(o, color, lw) {
     const { ctx } = this;
+    if (o.type === 'guide') { this.drawGuide(o, color === ACCENT ? o.color || GUIDE : color, lw); return; }
     if (o.type === 'wall') {
       ctx.save(); this.worldT(); this.pathPoly(this.wallPoly(o));
       ctx.strokeStyle = color; ctx.lineWidth = lw / this.scale; ctx.stroke(); ctx.restore();
@@ -923,7 +1093,8 @@ export class Plan2D {
     if (!sel || sel.level !== store.level) return;
     this.outlineObj(sel, ACCENT, 2.2);
     const px = 1 / this.scale;
-    if (sel.type === 'wall' || sel.type === 'dimension') {
+    if (sel.type === 'wall' || sel.type === 'dimension' || sel.type === 'guide') {
+      if (sel.type === 'guide' && (sel.locked || store.view.guides === false)) return;
       this.handle(sel.x1, sel.y1, true); this.handle(sel.x2, sel.y2, true);
       if (sel.type === 'wall') {
         const m = this.bendPoint(sel), [sx, sy] = this.w2s(m.x, m.y), { ctx } = this;
@@ -971,8 +1142,57 @@ export class Plan2D {
     for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) this.handle(...toWorld(o, (sx * o.w) / 2, (sy * o.d) / 2));
   }
 
+  // Centre lines (dash-dot) and face lines of every straight wall, shown while drawing or measuring.
+  drawWallLines() {
+    const { ctx } = this;
+    this.screenT();
+    ctx.save();
+    for (const l of this.wallLines()) {
+      const [x1, y1] = this.w2s(l.x1, l.y1), [x2, y2] = this.w2s(l.x2, l.y2);
+      if (l.kind === 'centre') { ctx.strokeStyle = 'rgba(220,38,38,.75)'; ctx.lineWidth = 1; ctx.setLineDash([10, 3, 2, 3]); }
+      else { ctx.strokeStyle = 'rgba(37,99,235,.55)'; ctx.lineWidth = 1; ctx.setLineDash([]); }
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+    for (const w of wallsOn(store.level)) {
+      if (!wallArc(w) || w.hidden) continue;
+      ctx.strokeStyle = 'rgba(220,38,38,.75)'; ctx.setLineDash([10, 3, 2, 3]); ctx.beginPath();
+      wallSamples(w).forEach(([x, y], i) => { const [sx, sy] = this.w2s(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); });
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  drawSnapAids() {
+    const { ctx } = this;
+    this.screenT();
+    ctx.save();
+    // alignment lines back to the corner the pointer lines up with
+    for (const m of this.alignMarks || []) {
+      const [x1, y1] = this.w2s(...m.from), [x2, y2] = this.w2s(...m.to);
+      ctx.strokeStyle = '#db2777'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(x1 - 4, y1 - 4); ctx.lineTo(x1 + 4, y1 + 4); ctx.moveTo(x1 + 4, y1 - 4); ctx.lineTo(x1 - 4, y1 + 4); ctx.stroke();
+    }
+    // the wall line being snapped to, and a right-angle mark for a perpendicular snap
+    const s = this.snapLine;
+    if (s) {
+      const l = s.line, [x1, y1] = this.w2s(l.x1, l.y1), [x2, y2] = this.w2s(l.x2, l.y2);
+      ctx.strokeStyle = s.kind === 'centre' ? '#dc2626' : '#f97316'; ctx.lineWidth = 2.5; ctx.setLineDash(s.kind === 'centre' ? [10, 3, 2, 3] : []);
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+      const [sx, sy] = this.w2s(s.x, s.y);
+      ctx.font = '600 10px Inter, system-ui, sans-serif'; ctx.fillStyle = ctx.strokeStyle; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(s.kind === 'perp' ? '⟂ perpendicular' : s.kind === 'centre' ? 'centre line' : 'wall face', sx + 9, sy + 8);
+      if (s.kind === 'perp') {
+        const L = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / L, uy = (y2 - y1) / L, k = 8;
+        ctx.lineWidth = 1.5; ctx.beginPath();
+        ctx.moveTo(sx + ux * k, sy + uy * k); ctx.lineTo(sx + ux * k - uy * k, sy + uy * k + ux * k); ctx.lineTo(sx - uy * k, sy + ux * k); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   drawTools() {
     const { ctx } = this, px = 1 / this.scale;
+    if (['wall', 'measure', 'dimension', 'guide', 'room', 'stairdraw'].includes(store.tool)) this.drawWallLines();
     // curved wall being bent
     if (store.tool === 'wall' && this.draft?.bend && this.mouse.inside) {
       const { a, b } = this.draft.bend, bulge = this.bendFromPointer(this.mouse);
@@ -1008,6 +1228,20 @@ export class Plan2D {
       this.screenT();
       for (const p of pts) { const [sx, sy] = this.w2s(p.x, p.y); ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fillStyle = ACCENT; ctx.fill(); }
     }
+    // guide-line draft
+    if (store.tool === 'guide' && this.guideDraft && this.mouse.inside) {
+      const a = this.guideDraft, b = this.preview || this.mouse;
+      if (Math.hypot(b.x - a.x, b.y - a.y) > 0.01) {
+        this.drawGuide({ x1: a.x, y1: a.y, x2: b.x, y2: b.y }, ACCENT, 1.6);
+        this.screenT();
+        const [sx, sy] = this.w2s(b.x, b.y);
+        let deg = Math.round(-Math.atan2(b.y - a.y, b.x - a.x) / DEG); if (deg < 0) deg += 360;
+        this.badge(sx + 14, sy + 16, (deg % 180 === 0 ? 'Horizontal' : deg % 180 === 90 ? 'Vertical' : deg + '°') + ' · click to place', GUIDE);
+      }
+      this.screenT();
+      const [sx, sy] = this.w2s(a.x, a.y);
+      ctx.beginPath(); ctx.arc(sx, sy, 4, 0, Math.PI * 2); ctx.fillStyle = GUIDE; ctx.fill();
+    }
     // dimension-line draft
     if (store.tool === 'dimension' && this.dimDraft && this.mouse.inside) {
       const a = this.dimDraft, b = this.snapOn() ? this.snapPoint(this.mouse) : this.mouse;
@@ -1037,7 +1271,11 @@ export class Plan2D {
       ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
       for (const [x, y] of [[x1, y1], [x2, y2]]) { ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fillStyle = '#c2410c'; ctx.fill(); }
       const L = Math.hypot(b.x - a.x, b.y - a.y);
-      if (L > 0.01) this.badge((x1 + x2) / 2 + 10, (y1 + y2) / 2 - 24, `📏 ${fmtLen(L)}`, '#c2410c');
+      if (L > 0.01) {
+        let deg = Math.round(-Math.atan2(b.y - a.y, b.x - a.x) / DEG); if (deg < 0) deg += 360;
+        const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y), axis = dx < 0.005 || dy < 0.005;
+        this.badge((x1 + x2) / 2 + 10, (y1 + y2) / 2 - 24, `📏 ${fmtLen(L)}` + (axis ? '' : `  ·  ΔX ${fmtLen(dx)}  ΔY ${fmtLen(dy)}  ·  ${deg}°`), '#c2410c');
+      }
     }
     // placement ghost
     const key = store.tool === 'place' ? store.armed : this.dragOver ? store.dragKey : null;
@@ -1059,6 +1297,7 @@ export class Plan2D {
         ctx.restore();
       }
     }
+    this.drawSnapAids();
     if (this.snapMark && store.tool !== 'select') {
       this.screenT();
       const [sx, sy] = this.w2s(this.snapMark.x, this.snapMark.y);

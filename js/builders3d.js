@@ -978,9 +978,19 @@ B.lamp = (o, g) => {
 B.sofa = (o, g) => {
   const f = finishMat('fabric', o.color || '#7d8a99'), lighter = finishMat('fabric', new THREE.Color(o.color || '#7d8a99').offsetHSL(0, 0, 0.06).getStyle());
   const { w, d } = o, legs = colorMat('#3b2a1c', 0.5);
+  if (o.shape === 'lshape') {
+    // a seat run along the back (no right arm) joined to a full-depth chaise on the right
+    const s = Math.min(0.95, d * 0.6), c = Math.min(0.95, w * 0.45), xc = w / 2 - c / 2;
+    const run = new THREE.Group(); B.sofa({ ...o, shape: 'straight', w: w - c, d: s, noRightArm: true }, run); run.position.set(-c / 2, 0, -d / 2 + s / 2); g.add(run);
+    g.add(boxB(c, 0.3, d, f, xc, 0.08, 0), boxB(c - 0.22, 0.14, d - 0.24, lighter, xc - 0.1, 0.38, 0.1));
+    g.add(boxB(0.2, 0.28, d, f, w / 2 - 0.1, 0.38, 0), boxB(c, 0.5, 0.2, f, xc, 0.38, -d / 2 + 0.1));
+    for (const [x, z] of [[w / 2 - c + 0.08, d / 2 - 0.08], [w / 2 - 0.08, d / 2 - 0.08], [w / 2 - 0.08, -d / 2 + 0.08]]) g.add(boxB(0.05, 0.08, 0.05, legs, x, 0, z));
+    return;
+  }
   for (const [x, z] of [[-w / 2 + 0.08, -d / 2 + 0.08], [w / 2 - 0.08, -d / 2 + 0.08], [-w / 2 + 0.08, d / 2 - 0.08], [w / 2 - 0.08, d / 2 - 0.08]]) g.add(boxB(0.05, 0.08, 0.05, legs, x, 0, z));
   g.add(boxB(w, 0.3, d, f, 0, 0.08, 0), boxB(w, 0.5, 0.2, f, 0, 0.38, -d / 2 + 0.1));
-  g.add(boxB(0.2, 0.28, d, f, -w / 2 + 0.1, 0.38, 0), boxB(0.2, 0.28, d, f, w / 2 - 0.1, 0.38, 0));
+  g.add(boxB(0.2, 0.28, d, f, -w / 2 + 0.1, 0.38, 0));
+  if (!o.noRightArm) g.add(boxB(0.2, 0.28, d, f, w / 2 - 0.1, 0.38, 0));
   const n = Math.max(1, Math.round((w - 0.4) / 0.7)), cw = (w - 0.4) / n;
   for (let i = 0; i < n; i++) {
     g.add(boxB(cw - 0.02, 0.14, d - 0.24, lighter, -w / 2 + 0.2 + cw * (i + 0.5), 0.38, 0.1));
@@ -1076,6 +1086,14 @@ B.washer = (o, g) => {
 B.wardrobe = (o, g) => {
   const m = colorMat(o.color || '#c8b8a2', 0.5), h = o.h || 2.1;
   g.add(boxB(o.w, h, o.d, m, 0, 0, 0));
+  if (o.sliding) {
+    // two overlapping sliding panels on tracks, one with a mirror strip
+    const pw = o.w / 2 + 0.03, edge = colorMat('#8d7f6c', 0.6);
+    g.add(boxB(pw, h - 0.08, 0.02, m, -o.w / 4 + 0.015, 0.04, o.d / 2 + 0.01), boxB(pw, h - 0.08, 0.02, m, o.w / 4 - 0.015, 0.04, o.d / 2 + 0.035));
+    g.add(boxB(pw * 0.42, h * 0.7, 0.005, colorMat('#c9d6df', 0.05, 0.9), o.w / 4 - 0.015, h * 0.15, o.d / 2 + 0.048));
+    g.add(boxB(o.w, 0.03, 0.06, edge, 0, h - 0.03, o.d / 2 + 0.02), boxB(o.w, 0.03, 0.06, edge, 0, 0, o.d / 2 + 0.02));
+    return;
+  }
   const n = Math.max(2, Math.round(o.w / 0.6));
   for (let i = 1; i < n; i++) g.add(boxB(0.008, h - 0.1, 0.01, colorMat('#8d7f6c', 0.6), -o.w / 2 + (i * o.w) / n, 0.05, o.d / 2));
   for (let i = 0; i < n; i++) g.add(boxB(0.02, 0.3, 0.03, CHROME(), -o.w / 2 + ((i + (i % 2 ? 0.15 : 0.85)) * o.w) / n, h * 0.45, o.d / 2 + 0.015));
@@ -1119,9 +1137,59 @@ B.pooja = (o, g) => {
   }
 };
 B.fridge = (o, g) => {
-  const m = colorMat('#d7dadd', 0.25, 0.6);
-  g.add(boxB(o.w, 1.8, o.d, m, 0, 0, 0), boxB(o.w, 0.01, 0.01, colorMat('#555', 0.5), 0, 1.15, o.d / 2));
+  const m = colorMat('#d7dadd', 0.25, 0.6), seam = colorMat('#555', 0.5);
+  if (o.w > 0.82) {
+    // side-by-side double door
+    g.add(boxB(o.w, 1.8, o.d, m, 0, 0, 0), boxB(0.01, 1.76, 0.01, seam, 0, 0.02, o.d / 2));
+    for (const s of [-1, 1]) g.add(boxB(0.02, 0.6, 0.03, CHROME(), s * 0.05, 0.7, o.d / 2 + 0.02));
+    return;
+  }
+  g.add(boxB(o.w, 1.8, o.d, m, 0, 0, 0), boxB(o.w, 0.01, 0.01, seam, 0, 1.15, o.d / 2));
   for (const y of [0.7, 1.35]) g.add(boxB(0.02, 0.35, 0.03, CHROME(), o.w / 2 - 0.08, y, o.d / 2 + 0.02));
+};
+B.nightstand = (o, g) => {
+  const m = colorMat(o.color || '#8a6a4a', 0.5), knob = CHROME();
+  g.add(boxB(o.w, 0.5, o.d, m, 0, 0.05, 0), boxB(o.w - 0.04, 0.05, o.d - 0.04, colorMat('#2f2a26', 0.6), 0, 0, 0));
+  for (const y of [0.17, 0.39]) g.add(boxB(o.w - 0.04, 0.005, 0.005, colorMat('#5a4632', 0.6), 0, y, o.d / 2), box(0.08, 0.015, 0.02, knob, 0, y + 0.07, o.d / 2 + 0.01));
+  g.add(cyl(0.06, 0.08, 0.04, colorMat('#e5e0d6', 0.5), -o.w / 4, 0.55, 0, 16), cyl(0.012, 0.012, 0.25, CHROME(), -o.w / 4, 0.59, 0, 8));
+  g.add(cyl(0.07, 0.11, 0.16, colorMat('#f6efe0', 0.8, 0, { emissive: '#ffd9a0', emissiveIntensity: 0.6 }), -o.w / 4, 0.82, 0, 18));
+};
+B.dressing = (o, g) => {
+  const m = colorMat(o.color || '#b48a5e', 0.5);
+  g.add(boxB(o.w, 0.76, o.d, m, 0, 0, 0), boxB(o.w + 0.02, 0.03, o.d + 0.02, finishMat('marble', '#ffffff'), 0, 0.76, 0));
+  const mirror = new THREE.Mesh(new THREE.CircleGeometry(1, 40), colorMat('#c9d6df', 0.03, 0.95)); mirror.scale.set(o.w * 0.32, 0.42, 1); mirror.position.set(0, 1.3, -o.d / 2 + 0.03); g.add(mirror);
+  const frame = new THREE.Mesh(new THREE.TorusGeometry(1, 0.06, 8, 40), m); frame.scale.set(o.w * 0.32, 0.42, 0.4); frame.position.copy(mirror.position); g.add(frame);
+  g.add(cyl(0.18, 0.18, 0.06, finishMat('fabric', '#e5e0d6'), 0, 0.42, o.d / 2 + 0.25, 20), cyl(0.03, 0.03, 0.42, colorMat('#2f2a26', 0.6), 0, 0, o.d / 2 + 0.25, 8));
+};
+B.cot = (o, g) => {
+  const m = colorMat(o.color || '#f3ede3', 0.5), rails = [];
+  for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) g.add(boxB(0.05, 0.95, 0.05, m, x * (o.w / 2 - 0.025), 0, z * (o.d / 2 - 0.025)));
+  g.add(boxB(o.w - 0.06, 0.12, o.d - 0.06, finishMat('fabric', '#ffffff'), 0, 0.3, 0));
+  for (let x = -o.w / 2 + 0.07; x < o.w / 2 - 0.04; x += 0.075) for (const z of [-1, 1]) rails.push({ w: 0.02, h: 0.5, d: 0.02, x, y: 0.67, z: z * (o.d / 2 - 0.025) });
+  for (let z = -o.d / 2 + 0.07; z < o.d / 2 - 0.04; z += 0.075) for (const x of [-1, 1]) rails.push({ w: 0.02, h: 0.5, d: 0.02, x: x * (o.w / 2 - 0.025), y: 0.67, z });
+  g.add(mergedBoxes(rails, m));
+  for (const z of [-1, 1]) g.add(boxB(o.w, 0.04, 0.05, m, 0, 0.92, z * (o.d / 2 - 0.025)));
+  for (const x of [-1, 1]) g.add(boxB(0.05, 0.04, o.d, m, x * (o.w / 2 - 0.025), 0.92, 0));
+};
+B.coffeetable = (o, g) => {
+  const wood = finishMat('wood', o.color || '#8a6a4a'), dark = colorMat('#2f2a26', 0.6);
+  g.add(boxB(o.w, 0.04, o.d, wood, 0, 0.4, 0), boxB(o.w - 0.12, 0.02, o.d - 0.12, wood, 0, 0.12, 0));
+  for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) g.add(boxB(0.04, 0.4, 0.04, dark, x * (o.w / 2 - 0.06), 0, z * (o.d / 2 - 0.06)));
+  g.add(cyl(0.06, 0.05, 0.12, colorMat('#e7e2d6', 0.3), o.w * 0.2, 0.44, 0, 14));
+};
+B.shoerack = (o, g) => {
+  const m = colorMat(o.color || '#9a7b5b', 0.55), h = 0.95, rnd = seeded(seedOf(o)), shoes = [];
+  g.add(boxB(o.w, h, 0.02, m, 0, 0, -o.d / 2 + 0.01), boxB(0.02, h, o.d, m, -o.w / 2 + 0.01, 0, 0), boxB(0.02, h, o.d, m, o.w / 2 - 0.01, 0, 0));
+  for (let i = 0; i <= 3; i++) {
+    g.add(boxB(o.w, 0.02, o.d, m, 0, (i * h) / 3 - (i === 3 ? 0.02 : 0), 0));
+    if (i < 3) for (let x = -o.w / 2 + 0.12; x < o.w / 2 - 0.1; x += 0.2) shoes.push({ w: 0.09, h: 0.08, d: o.d * 0.75, x: x + rnd() * 0.03, y: (i * h) / 3 + 0.06, z: 0 });
+  }
+  g.add(mergedBoxes(shoes, colorMat(['#3f3f46', '#7c2d12', '#1e3a8a', '#e5e7eb'][Math.floor(rnd() * 4)], 0.6)));
+};
+B.floorlamp = (o, g) => {
+  const metal = colorMat('#2f2a26', 0.4, 0.6), r = o.w / 2;
+  g.add(cyl(r * 0.6, r * 0.7, 0.03, metal, 0, 0, 0, 20), cyl(0.012, 0.012, 1.45, metal, 0, 0.03, 0, 8));
+  g.add(cyl(r * 0.55, r, 0.32, colorMat(o.color || '#f1e6cf', 0.8, 0, { emissive: '#ffd9a0', emissiveIntensity: 0.55, side: THREE.DoubleSide }), 0, 1.38, 0, 24));
 };
 B.island = (o, g) => {
   g.add(boxB(o.w, 0.86, o.d, colorMat(o.color || '#f2f0eb', 0.45), 0, 0, 0), boxB(o.w + 0.1, 0.04, o.d + 0.3, finishMat('marble', '#5a5d63'), 0, 0.86, 0.15));
