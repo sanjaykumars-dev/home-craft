@@ -16,8 +16,9 @@ It's a static site, so no build step is needed. Push the folder to a public GitH
 
 ## Designs
 
-**Designs** opens five ready-made houses, and every one is fully editable:
+**Designs** opens six ready-made designs, and every one is fully editable:
 
+- **Green Meadows township:** a tree-lined avenue of eight unique, fully furnished houses (Kerala traditional, modern villa, colonial, Kerala contemporary, craftsman bungalow with a curved bay, courtyard house, spiral-stair duplex and a compact family home), a park with gazebo and fountain, a community pool and visitor parking. Between them they use every item in the catalogue, and no furniture stands in front of any door.
 - **Kerala traditional:** mukhappu tiled roof, sit-out with charupadi, padippura gate, pooja room, well and coconut palms.
 - **Kerala contemporary:** two storeys.
 - **Modern villa**
@@ -35,6 +36,7 @@ It's a static site, so no build step is needed. Push the folder to a public GitH
 - **Gates & boundary:** padippura, wrought iron, arched iron, sliding, wooden, modern slat and pedestrian gates, plus plaster, laterite, brick or railing walls.
 - **Facade:** balconies, pergola, stone, laterite and wood cladding, louvers, elevation frames and chimney.
 - **Garden:** coconut, mango, gulmohar, banana, bamboo, cypress and other trees, plus hedges, flower beds, pots, tulsi thara, sit-outs, bench, swing, fountain and rocks.
+- **Furniture (place and resize anywhere):** single, double, queen and king beds, baby cot, bedside table, 2-door, 3-door and sliding wardrobes, dressing table, study desk, bookshelf; 3- and 2-seat and L-shaped sofas, armchair, coffee table, TV unit, rug, floor lamp, shoe rack, pooja unit; 4-, 6- and 8-seat dining, single- and double-door fridges, kitchen counter and island.
 - **Bath, interior & services:** WC (western and Indian), basin, shower, bathtub, washer, pooja unit, wardrobe, TV unit, desk, bookshelf, fridge, island, water tank, solar panels, septic tank, open well and AC unit.
 
 ## Controls
@@ -44,11 +46,14 @@ It's a static site, so no build step is needed. Push the folder to a public GitH
   - Double-click any dimension in the plan to type an exact value.
   - The ⚙ settings control what is shown, how walls are measured (centre-line, outside or clear), precision and snap step.
   - Units can be m, cm, mm or ft-in.
+- **Guide lines:** the Guide tool (G) lays a construction line through two points; it locks in place as soon as it is placed. Walls, rooms and dimensions snap to guides and to where guides cross each other or a wall. **Guide grid** lays out a lettered and numbered setting-out grid at the spacings you type. A selected guide can be turned into a wall or copied parallel at an exact distance, and the Guides button shows or hides them.
+- **Drawing and measuring aids:** while drawing walls or measuring, every wall shows its face lines and dash-dot centre line, the pointer snaps along them (with a ⟂ perpendicular snap for clear room widths), and pink tracking lines show when a point lines up with another corner. Measure shows length, ΔX, ΔY and angle.
 - **Locks:** 🔒 next to any dimension stops it from changing. You can also lock, hide or reorder whole elements (front, back, forward, backward).
 - **Elements tab:** a tree of every element by storey and group, with select, hide and lock.
 - **Plinth:** raises the house above ground. The site stays at ground level, and the portico gets steps.
 - **Engineer mode:** shows door/window tags (D1, W2…), opening dimension chains and engineering checks.
 - **Elevations:** orthographic front, rear, left and right views with level markers (GL, plinth/FFL, top of wall, ridge).
+- **📷 Camera (C):** frames a shot in the 3D view (aspect, size up to 4K, lens, thirds grid, optional caption, JPG or PNG). Enter takes a snap into a gallery you can preview and download; **Save view** stores camera positions in the project. **⛶ Full screen** fills the screen with the 3D view.
 - **▶ Spectate:** you control a site-engineer character.
   - The character is a skinned figure animated with real motion capture (idle, walk and run, cross-faded by speed). To use your own realistic human instead, put a rigged model at `assets/character.glb`; see [assets/README.md](assets/README.md).
   - Controls: W/S walk forward or back, A/D turn, Q/E side-step, Shift run, Space jump, drag to turn and look up or down, V for first person. The camera always looks the way the character faces. **Auto tour** lets a guide in a hard hat lead instead.
@@ -83,6 +88,8 @@ The structural guidance in it is typical practice only. A licensed structural en
 | `js/builders3d.js` | 3D models for every element (incl. Kerala roof, porticos, gates, fittings) |
 | `js/textures.js` | Procedural textures (laterite, clay tile, brick, wood, grass…) |
 | `js/view3d.js` | Three.js scene, orbit/walk, elevations, off-screen rendering |
+| `js/camera.js` | 3D camera panel: framing, snaps gallery, saved views |
+| `js/town.js` | Green Meadows township generator (house planner and door-aware furniture fitter) |
 | `js/tour.js` | Spectate tour with the guide character |
 | `js/pdf.js` | PDF drawing set generator |
 | `js/designs.js`, `js/templates.js` | Ready-made house designs |

@@ -2,6 +2,7 @@
 import { uid } from './state.js';
 import { ROOM_PRESETS, presetItems } from './catalog.js';
 import { sampleHouse } from './templates.js';
+import { township } from './town.js';
 
 // ---------------------------------------------------------------- design-authoring helper
 function builder() {
@@ -222,6 +223,8 @@ export function colonialHome() {
 
 const ic = (body) => `<svg viewBox="0 0 200 92" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">${body}</svg>`;
 export const DESIGNS = [
+  { name: 'Green Meadows township', desc: 'A tree-lined avenue of eight unique houses (Kerala, modern, colonial, craftsman, courtyard, duplex and more), a park with gazebo and fountain, and a community pool. Every catalogue item is used, fully furnished.', tags: ['8 houses', 'park & pool', 'every asset'], build: township,
+    icon: ic('<path d="M10 52l14-12 14 12z" fill="#b9583a"/><rect x="13" y="52" width="22" height="18" fill="#f6f1e7"/><path d="M58 44l14-12 14 12z" fill="#3f444b"/><rect x="61" y="44" width="22" height="26" fill="#b5654a"/><rect x="106" y="40" width="26" height="30" fill="#f2f0eb"/><rect x="104" y="37" width="30" height="4" fill="#555"/><path d="M146 52l14-12 14 12z" fill="#5a4a42"/><rect x="149" y="52" width="22" height="18" fill="#efe3cc"/><path d="M0 76h200" stroke="#555" stroke-width="5"/><circle cx="46" cy="58" r="6" fill="#3f7a2e"/><circle cx="94" cy="56" r="6" fill="#3f7a2e"/><circle cx="140" cy="58" r="6" fill="#3f7a2e"/>') },
   { name: 'Kerala traditional', desc: 'Clay-tiled mukhappu roof, wooden sit-out with charupadi, padippura gate, pooja room, open well and coconut grove.', tags: ['1 storey', '3 BHK', '~154 m²'], build: keralaTraditional,
     icon: ic('<path d="M30 52l30-26h80l30 26z" fill="#b9583a" stroke="#7a3a26"/><path d="M90 26l10-12 10 12z" fill="#5a3a22"/><rect x="45" y="52" width="110" height="30" fill="#f6f1e7"/><rect x="88" y="62" width="24" height="20" fill="#5a3a22"/><path d="M20 82h160" stroke="#555"/>') },
   { name: 'Kerala contemporary', desc: 'Two storeys under a sweeping tiled roof, gable porch with wooden jaali, balcony, carport and arched iron gate.', tags: ['2 storeys', '3 BHK', '~230 m²'], build: keralaContemporary,
