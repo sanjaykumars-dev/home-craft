@@ -6,7 +6,7 @@ import {
 } from './state.js';
 import { CATALOG, CATALOG_INDEX, TYPES, ICONS, iconForObj, labelForObj, floorPoly, polyArea, setSideLength, inScope, objScope as objScopeOf } from './catalog.js';
 import { Plan2D } from './plan2d.js';
-import { plotOf, rect, shapePlot, siteBounds, sideLen, setSide, cornerAngle, setCornerAngle, sideBearing, setSideBearing, sideFacing, setbackPoly, plotStats, plotEditBlock, CENT, SQFT } from './plot.js';
+import { plotOf, rect, shapePlot, siteBounds, sideLen, setSide, cornerAngle, setCornerAngle, sideBearing, setSideBearing, sideFacing, setbackPoly, alignSide, plotStats, plotEditBlock, solveQuad, CENT, SQFT } from './plot.js';
 import { DESIGNS, keralaTraditional } from './designs.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -133,6 +133,12 @@ function placeAt(key, x, y, { onWall } = {}) {
       if (b && x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1) Object.assign(o, { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2, w: b.x1 - b.x0, d: b.y1 - b.y0 });
     }
     if (o.type === 'stairs' || o.type === 'spiral') o.h = lvl.height;
+    // ramps and sit-out steps rise to the plinth (finished floor) and size themselves for it
+    if (o.type === 'ramp' || o.type === 'steps') {
+      o.h ||= Math.max(0.15, store.doc.plinth || 0.45);
+      if (o.type === 'ramp') o.d ||= +(o.h * (o.ratio || 12)).toFixed(2);
+      if (o.type === 'steps' && !o.d) o.d = o.style === 'round' ? o.w / 2 : +(Math.max(1, Math.round(o.h / 0.15)) * 0.3).toFixed(2);
+    }
   }
   checkpoint();
   store.doc.objects.push(o);
@@ -512,7 +518,7 @@ function renderProps(force = false) {
 // ------------------------------------------------------------------ plot & orientation
 let plotDraft = null; // the shape being filled in before the plot exists
 const BOUNDARY_TYPES = new Set(['boundary', 'fence', 'gate', 'hedge']);
-function makePlot(pts) { checkpoint(); store.doc.plot = { pts, setbacks: pts.map(() => 0) }; emit('doc'); plan.fit(); renderProps(true); }
+function makePlot(pts) { survey = null; checkpoint(); store.doc.plot = { pts, setbacks: pts.map(() => 0) }; emit('doc'); plan.fit(); renderProps(true); }
 function fitPlot(kind) {
   const doc = store.doc, b = kind === 'boundary' ? siteBounds(doc, BOUNDARY_TYPES) : siteBounds(doc);
   if (!b) { toast(kind === 'boundary' ? 'No boundary walls, fences or gates yet' : 'Nothing drawn yet', true); return; }
@@ -581,7 +587,18 @@ function renderPlot(panel) {
         h('label', {}, 'Setback', lenIn(p.setbacks[i] || 0, (v) => { checkpoint(); p.setbacks[i] = v; emit('doc'); }, `Building setback from side ${name}`, p.locked)))));
   }
   const gap = Math.hypot(p.pts[0][0] - p.pts[n - 1][0], p.pts[0][1] - p.pts[n - 1][1]);
+  if (n === 4) sec.append(surveyBox(p));
+  // the setback line: a straight buildable rectangle (default) or parallel to every side
+  const sb = setbackPoly(p), rectMode = p.setbackMode !== 'follow';
+  const sbBox = h('div', { class: 'psec-in' },
+    h('div', { class: 'row' }, h('label', {}, 'Setback line'), h('select', { disabled: !!p.locked, onchange: (e) => { checkpoint(); p.setbackMode = e.target.value; emit('doc'); renderProps(true); } },
+      [['rect', 'Straight rectangle'], ['follow', 'Follow plot sides']].map(([v, t]) => h('option', { value: v, selected: (rectMode ? 'rect' : 'follow') === v }, t)))),
+    rectMode ? h('div', { class: 'row' }, h('label', {}, 'Square to side'), h('select', { disabled: !!p.locked, onchange: (e) => { checkpoint(); p.setbackAlign = +e.target.value; emit('doc'); renderProps(true); } },
+      p.pts.map((_, i) => h('option', { value: i, selected: alignSide(p) === i }, `${L(i)}–${L(i + 1)}`)))) : null,
+    sb && rectMode ? h('div', { class: 'stat' }, h('span', {}, 'Buildable rectangle'), h('b', {}, `${fmtLen(Math.hypot(sb[1][0] - sb[0][0], sb[1][1] - sb[0][1]))} × ${fmtLen(Math.hypot(sb[2][0] - sb[1][0], sb[2][1] - sb[1][1]))}`)) : null,
+    !sb ? h('p', { class: 'note' }, 'Add a setback to any side to see the buildable area.') : null);
   sec.append(sides,
+    sbBox,
     h('p', { class: 'note' }, `Length and bearing move the side's end corner; the last side ${L(n - 1)}–A always closes the plot (now ${fmtLen(gap)}). Bearings are compass directions from the first corner: 0° north, 90° east, 180° south, 270° west.`),
     stat('Ground coverage', `${(st.coverage * 100).toFixed(1)} %`, st.coverage > 0.65),
     stat('Floor area ratio (FAR)', st.far.toFixed(2)),
@@ -605,6 +622,45 @@ function renderPlot(panel) {
       h('button', { disabled: !!p.locked, title: 'Start the plot again as a rectangle, skewed plot or trapezoid', onclick: () => { if (!confirm('Replace this plot with a new shape?')) return; checkpoint(); delete doc.plot; emit('doc'); renderProps(true); } }, 'New shape…'),
       h('button', { class: 'danger', disabled: !!p.locked, onclick: () => { checkpoint(); delete doc.plot; emit('doc'); renderProps(true); } }, 'Remove plot')));
 }
+
+// Rebuild a four-sided plot from survey measurements: four lengths, which side is straight and which way it runs,
+// and one more measurement (an inside angle or a diagonal) — that fixes the shape exactly.
+let survey = null;
+function surveyBox(p) {
+  const doc = store.doc, north = ((doc.north || 0) * Math.PI) / 180, L = (i) => String.fromCharCode(65 + (i % 4)), side = (i) => `${L(i)}–${L(i + 1)}`;
+  if (survey && survey.plot !== p) survey = null; // another plot, or undo: start from what is there
+  const s = (survey ??= { plot: p, lens: p.pts.map((_, i) => sideLen(p.pts, i)), base: 0, runs: 'ew', known: 'angle1', deg: cornerAngle(p.pts, 1), diag: Math.hypot(p.pts[2][0] - p.pts[0][0], p.pts[2][1] - p.pts[0][1]) });
+  const sel = (val, opts, on) => h('select', { onchange: (e) => { on(e.target.value); renderProps(true); } }, opts.map(([v, t]) => h('option', { value: v, selected: String(v) === String(val) }, t)));
+  const len = (v, on) => h('div', { class: 'inp' }, h('input', { type: 'number', step: 'any', min: 0, value: +toUnit(v).toFixed(3), onchange: (e) => { const x = fromUnit(parseFloat(e.target.value)); if (x > 0) on(x); } }), h('span', { class: 'u' }, unitLabel()));
+  const row = (label, el) => h('div', { class: 'row' }, h('label', {}, label), el);
+  const isAngle = s.known.startsWith('angle'), k = +s.known.slice(-1);
+  const apply = () => {
+    if (p.locked) { toast('The plot is locked — unlock it first', true); return; }
+    const cur = unit2(p.pts[(s.base + 1) % 4], p.pts[s.base]);
+    let dir = s.runs === 'ew' ? [Math.cos(north), Math.sin(north)] : s.runs === 'ns' ? [Math.sin(north), -Math.cos(north)] : cur;
+    if (dir[0] * cur[0] + dir[1] * cur[1] < 0) dir = [-dir[0], -dir[1]]; // keep the side running the same way round
+    const pts = solveQuad(s.lens, s.base, dir, isAngle ? { kind: 'angle', corner: k, deg: s.deg } : { kind: 'diag', from: k, len: s.diag }, p.pts);
+    if (!pts) { toast("Those measurements don't close into a plot — check the lengths and the angle or diagonal", true); return; }
+    const c0 = centroid(p.pts), c1 = centroid(pts);
+    checkpoint();
+    p.pts = pts.map(([x, y]) => [+(x - c1[0] + c0[0]).toFixed(4), +(y - c1[1] + c0[1]).toFixed(4)]);
+    emit('doc'); plan.fit(); renderProps(true);
+    toast(`Plot rebuilt: ${side(s.base)} runs ${s.runs === 'ew' ? 'east–west' : s.runs === 'ns' ? 'north–south' : 'as before'}, every side as measured`);
+  };
+  return h('details', { class: 'survey', open: !!s.open, ontoggle: (e) => { s.open = e.target.open; } },
+    h('summary', {}, '📐 Rebuild from measurements'),
+    h('p', { class: 'note' }, 'Type the four sides from your survey sketch, say which side is straight, and add one more measurement. The plot is rebuilt exactly; the other sides lean as they must.'),
+    ...[0, 1, 2, 3].map((i) => row(`Side ${side(i)}`, len(s.lens[i], (v) => (s.lens[i] = v)))),
+    row('Straight side', sel(s.base, [0, 1, 2, 3].map((i) => [i, `${side(i)} (faces ${sideFacing(p.pts, i, doc.north || 0)})`]), (v) => { s.base = +v; })),
+    row('It runs', sel(s.runs, [['ew', 'East – west'], ['ns', 'North – south'], ['keep', 'As it is now']], (v) => { s.runs = v; })),
+    row('Also known', sel(s.known, [...[0, 1, 2, 3].map((i) => [`angle${i}`, `Angle at ${L(i)}`]), ['diag0', 'Diagonal A–C'], ['diag1', 'Diagonal B–D']], (v) => { s.known = v; })),
+    isAngle ? row(`Angle at ${L(k)}`, h('div', { class: 'inp' }, h('input', { type: 'number', step: 0.5, value: +s.deg.toFixed(1), onchange: (e) => { const d = parseFloat(e.target.value); if (d > 5 && d < 355) s.deg = d; } }), h('span', { class: 'u' }, '°')))
+      : row(`Diagonal ${L(k)}–${L(k + 2)}`, len(s.diag, (v) => (s.diag = v))),
+    h('div', { class: 'actions' }, h('button', { class: 'primary', onclick: apply }, 'Rebuild plot'),
+      h('button', { onclick: () => { survey = null; renderProps(true); } }, 'Reset to current')));
+}
+const unit2 = (b, a) => { const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1; return [dx / L, dy / L]; };
+const centroid = (pts) => [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
 
 // 2D view direction: plan-up, or a compass direction up the screen
 function syncViewDir() {

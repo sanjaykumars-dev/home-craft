@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { DEG, wallLen, wallAng, wallArc, wallPointAt, levelElev, baseElev, openingsOf, levelCentroid, outwardSign, toLocal, toWorld } from './state.js';
 import { finishMat, colorMat, paintMat, glassMat, darkGlassMat, waterTint } from './textures.js';
-import { seeded, seedOf, gazeboVerts, carportPosts, floorPoly, stairLayout, pointInPoly } from './catalog.js';
+import { seeded, seedOf, gazeboVerts, carportPosts, floorPoly, stairLayout, pointInPoly, stepCount } from './catalog.js';
 
 // ---------------------------------------------------------------- primitives
 // UVs in metres from vertex positions, projected along the dominant normal axis.
@@ -1224,6 +1224,46 @@ B.shoerack = (o, g) => {
     if (i < 3) for (let x = -o.w / 2 + 0.12; x < o.w / 2 - 0.1; x += 0.2) shoes.push({ w: 0.09, h: 0.08, d: o.d * 0.75, x: x + rnd() * 0.03, y: (i * h) / 3 + 0.06, z: 0 });
   }
   g.add(mergedBoxes(shoes, colorMat(['#3f3f46', '#7c2d12', '#1e3a8a', '#e5e7eb'][Math.floor(rnd() * 4)], 0.6)));
+};
+// Ramp: a solid wedge rising to the back (−z), with kerbs and, optionally, handrails at 0.9 m on both sides.
+B.ramp = (o, g) => {
+  const { w, d } = o, h = Math.max(0.02, o.h || 0.45), m = finishMat(o.finish || 'concrete', '#ffffff');
+  const sh = new THREE.Shape([new THREE.Vector2(-d / 2, 0), new THREE.Vector2(d / 2, 0), new THREE.Vector2(-d / 2, h)]);
+  const geo = new THREE.ExtrudeGeometry(sh, { depth: w, bevelEnabled: false });
+  geo.rotateY(-Math.PI / 2); geo.translate(w / 2, 0, 0); // profile runs along z: high at −z (back)
+  const wedge = new THREE.Mesh(planarUV(geo), m); g.add(wedge);
+  if (!o.rails) return;
+  const metal = colorMat('#4b5563', 0.4, 0.7);
+  for (const s of [-1, 1]) {
+    const x = s * (w / 2 - 0.05), n = Math.max(2, Math.ceil(d / 1.5));
+    for (let i = 0; i <= n; i++) { const z = -d / 2 + (i * d) / n, y = h * (0.5 - z / d); g.add(cyl(0.025, 0.025, 0.9, metal, x, y, z, 8)); }
+    g.add(beam(new THREE.Vector3(x, h + 0.9, -d / 2 - 0.3), new THREE.Vector3(x, 0.9, d / 2 + 0.3), 0.045, metal));
+    g.add(beam(new THREE.Vector3(x, h + 0.45, -d / 2), new THREE.Vector3(x, 0.45, d / 2), 0.03, metal));
+  }
+};
+// Sit-out steps: solid stacked treads, top tread at the back (−z) level with the floor they lead to.
+B.steps = (o, g) => {
+  const { w, d } = o, h = Math.max(0.05, o.h || 0.45), n = stepCount(o), r = h / n, m = finishMat(o.finish || 'stone', '#ffffff'), nose = finishMat('concrete', '#d8d3ca');
+  if (o.style === 'round') {
+    const R = Math.min(w / 2, d);
+    for (let i = 0; i < n; i++) {
+      const ri = R - (i * R) / n, c = new THREE.Mesh(new THREE.CylinderGeometry(ri, ri, r * (i + 1), 40, 1, false, -Math.PI / 2, Math.PI), m);
+      c.position.set(0, (r * (i + 1)) / 2, -d / 2); g.add(c);
+    }
+    return;
+  }
+  if (o.style === 'wrap') {
+    const t = Math.min(d, w / 2) / n;
+    for (let i = 0; i < n; i++) g.add(boxB(w - 2 * i * t, r * (i + 1), d - i * t, m, 0, 0, -(i * t) / 2));
+    return;
+  }
+  const t = d / n;
+  for (let i = 0; i < n; i++) {
+    const dz = d - i * t;
+    g.add(boxB(w, r * (i + 1), dz, m, 0, 0, -d / 2 + dz / 2));
+    g.add(boxB(w, 0.02, 0.04, nose, 0, r * (i + 1) - 0.02, -d / 2 + dz - 0.02)); // nosing strip
+  }
+  if (o.cheeks) for (const s of [-1, 1]) g.add(boxB(0.15, h + 0.3, d, finishMat(o.finish === 'laterite' ? 'laterite' : 'plaster', '#ffffff'), s * (w / 2 + 0.075), 0, 0));
 };
 B.floorlamp = (o, g) => {
   const metal = colorMat('#2f2a26', 0.4, 0.6), r = o.w / 2;

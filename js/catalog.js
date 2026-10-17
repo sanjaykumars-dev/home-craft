@@ -90,6 +90,10 @@ export const ICONS = {
   bathtub: ic('<path d="M4 24h40v6a10 10 0 0 1-10 10H14A10 10 0 0 1 4 30z"/><path d="M10 24V10a4 4 0 0 1 8 0" /><path d="M12 40l-2 4M36 40l2 4"/>'),
   washer: ic('<rect x="8" y="5" width="32" height="38" rx="3"/><circle cx="24" cy="27" r="10"/><circle cx="24" cy="27" r="5" stroke-width="1.4"/><path d="M13 11h6M33 11h1"/>'),
   pooja: ic('<path d="M8 42V22L24 6l16 16v20z"/><path d="M18 42V30a6 6 0 0 1 12 0v12"/><path d="M24 22c-2 2-2 4 0 6 2-2 2-4 0-6z" fill="currentColor"/><path d="M22 4h4" />'),
+  rampA: ic('<path d="M4 38h40L4 22z"/><path d="M8 18v-4l32 16v4" stroke-width="2"/><path d="M8 14v12M24 22v9M40 30v6" stroke-width="1.6"/>'),
+  stepsS: ic('<path d="M6 40h36M6 40v-6h9v-6h9v-6h9v-6h9v24"/>'),
+  stepsR: ic('<path d="M6 34a18 18 0 0 1 36 0M11 34a13 13 0 0 1 26 0M16 34a8 8 0 0 1 16 0M4 34h40"/>'),
+  stepsW: ic('<path d="M6 12v28h36V12M11 12v23h26V12M16 12v18h16V12M4 12h40"/>'),
   nightstand: ic('<rect x="12" y="14" width="24" height="24" rx="2"/><path d="M12 26h24M22 20h4M22 32h4"/>'),
   dressing: ic('<rect x="6" y="28" width="36" height="12" rx="1"/><ellipse cx="24" cy="16" rx="9" ry="11"/><path d="M24 34h0"/>'),
   coffeetable: ic('<rect x="6" y="16" width="36" height="16" rx="4"/><path d="M14 32v6M34 32v6"/>'),
@@ -872,6 +876,36 @@ Object.assign(TYPES, {
     ctx.beginPath(); ctx.arc(0, 0, o.w / 2, 0, 7); ctx.fillStyle = o.color; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke();
     ctx.beginPath(); ctx.arc(0, 0, 0.04, 0, 7); ctx.fillStyle = '#f59e0b'; ctx.fill();
   }, 6),
+  // Ramp: run = rise × ratio; arrow points up the slope (to the back, −y), handrails on both sides.
+  ramp: { label: 'Ramp', kind: 'rect', z2d: 1.5,
+    props: [...POS, len('w', 'Width'), len('d', 'Length (run)'), len('h', 'Rise', { min: 0.02 }), num('ratio', 'Slope 1 :', { min: 4, max: 20, step: 1 }),
+      { key: 'slopeInfo', label: 'Slope', kind: 'info', get: (o) => `1:${(o.d / Math.max(0.01, o.h)).toFixed(1)} · ${((Math.atan(o.h / Math.max(0.01, o.d)) * 180) / Math.PI).toFixed(1)}°${o.d / o.h < 12 && o.rails ? ' ⚠ steeper than 1:12 for wheelchairs' : ''}` },
+      bool('rails', 'Handrails'), select('finish', 'Finish', [['concrete', 'Concrete'], ['flagstone', 'Stone'], ['pavers', 'Pavers'], ['tile', 'Anti-skid tile']])],
+    draw2d(ctx, o, P) {
+      outline(ctx, o, P, '#e7e2d8');
+      ctx.strokeStyle = 'rgba(59,66,80,.55)'; ctx.lineWidth = P;
+      ctx.beginPath(); ctx.moveTo(0, o.d / 2 - 0.2); ctx.lineTo(0, -o.d / 2 + 0.25); ctx.moveTo(-0.15, -o.d / 2 + 0.45); ctx.lineTo(0, -o.d / 2 + 0.25); ctx.lineTo(0.15, -o.d / 2 + 0.45); ctx.stroke();
+      if (o.rails) { ctx.strokeStyle = '#334155'; ctx.lineWidth = 2 * P; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(s * (o.w / 2 - 0.05), -o.d / 2); ctx.lineTo(s * (o.w / 2 - 0.05), o.d / 2); ctx.stroke(); } }
+      txt(ctx, P, `UP 1:${(o.d / Math.max(0.01, o.h)).toFixed(0)}`, 0.0, 0.1, 8, '#334155', 700);
+    } },
+  // Steps up to a sit-out: straight, semicircular or on three sides; risers about 15 cm, treads 30 cm.
+  steps: { label: 'Sit-out steps', kind: 'rect', z2d: 1.6,
+    props: [...POS, len('w', 'Width'), len('d', 'Depth'), len('h', 'Total rise', { min: 0.05 }),
+      { key: 'stepInfo', label: 'Steps', kind: 'info', get: (o) => { const n = stepCount(o); return `${n} steps · riser ${(o.h / n * 100).toFixed(1)} cm`; } },
+      select('style', 'Shape', [['straight', 'Straight'], ['round', 'Semicircular'], ['wrap', 'Three-sided']]), bool('cheeks', 'Side walls'),
+      select('finish', 'Finish', [['stone', 'Stone'], ['marble', 'Granite / marble'], ['laterite', 'Laterite'], ['concrete', 'Concrete'], ['tile', 'Tile'], ['brick', 'Brick']])],
+    draw2d(ctx, o, P) {
+      const n = stepCount(o), { w, d } = o;
+      ctx.fillStyle = '#ece6da'; ctx.strokeStyle = LINE; ctx.lineWidth = P;
+      ctx.beginPath();
+      if (o.style === 'round') { const R = Math.min(w / 2, d); ctx.arc(0, -d / 2, R, 0, Math.PI); ctx.closePath(); ctx.fill(); ctx.stroke();
+        for (let k = 1; k < n; k++) { ctx.beginPath(); ctx.arc(0, -d / 2, R - (k * R) / n, 0, Math.PI); ctx.stroke(); } }
+      else if (o.style === 'wrap') { ctx.rect(-w / 2, -d / 2, w, d); ctx.fill(); ctx.stroke(); const t = Math.min(d, w / 2) / n;
+        for (let k = 1; k < n; k++) { ctx.beginPath(); ctx.moveTo(-w / 2 + k * t, -d / 2); ctx.lineTo(-w / 2 + k * t, d / 2 - k * t); ctx.lineTo(w / 2 - k * t, d / 2 - k * t); ctx.lineTo(w / 2 - k * t, -d / 2); ctx.stroke(); } }
+      else { ctx.rect(-w / 2, -d / 2, w, d); ctx.fill(); ctx.stroke(); ctx.beginPath(); for (let k = 1; k < n; k++) { const y = d / 2 - (k * d) / n; ctx.moveTo(-w / 2, y); ctx.lineTo(w / 2, y); } ctx.stroke();
+        if (o.cheeks) { ctx.fillStyle = '#c9a68f'; ctx.fillRect(-w / 2 - 0.15, -d / 2, 0.15, d); ctx.fillRect(w / 2, -d / 2, 0.15, d); } }
+      ctx.strokeStyle = 'rgba(59,66,80,.6)'; ctx.beginPath(); ctx.moveTo(0, d / 2 - 0.08); ctx.lineTo(0, -d / 2 + 0.12); ctx.moveTo(-0.1, -d / 2 + 0.26); ctx.lineTo(0, -d / 2 + 0.12); ctx.lineTo(0.1, -d / 2 + 0.26); ctx.stroke();
+    } },
   watertank: fx('Overhead water tank', [H, num('litres', 'Capacity (litres)', { min: 100, step: 100 })], (ctx, o, P) => {
     ctx.beginPath(); ctx.ellipse(0, 0, o.w / 2, o.d / 2, 0, 0, 7); ctx.fillStyle = '#e2e8f0'; ctx.fill(); ctx.strokeStyle = LINE; ctx.lineWidth = P; ctx.stroke();
     txt(ctx, P, 'OHT', 0, 0, 8, '#334155', 700);
@@ -885,6 +919,9 @@ Object.assign(TYPES, {
   acunit: fx('AC outdoor unit', [], (ctx, o, P) => { outline(ctx, o, P, '#f1f5f9'); ctx.beginPath(); ctx.arc(o.w * 0.15, 0, Math.min(o.w, o.d) * 0.35, 0, 7); ctx.stroke(); }, 6),
 });
 for (const t of ['watertank', 'well', 'floorlamp']) TYPES[t].uniform = true;
+
+// risers close to 15 cm
+export const stepCount = (o) => Math.max(1, Math.round((o.h || 0.45) / 0.15));
 
 // Fittings of a room preset placed inside the rectangle x0..x1 × y0..y1 (world metres).
 export function presetItems(key, x0, y0, x1, y1, level, inset = 0.15) {
@@ -1016,6 +1053,17 @@ export const CATALOG = [
     { key: 'floor-round', label: 'Round patio', icon: 'floorHex', make: () => ({ type: 'paving', shape: 'circle', w: 4, d: 4, finish: 'pavers' }) },
     { key: 'ramp', label: 'Ramp', icon: 'ramp', make: () => ({ type: 'paving', w: 1.5, d: 5, slope: 5, finish: 'concrete' }) },
   ] },
+  // Ramps and the steps up to a sit-out; their rise starts at the plinth height so they meet the floor
+  { id: 'ramps', label: 'Ramps & Sit-out Steps', items: [
+    { key: 'ramp-access', label: 'Wheelchair ramp 1:12', icon: 'rampA', make: () => ({ type: 'ramp', w: 1.2, d: 0, h: 0, ratio: 12, rails: true, finish: 'concrete' }) },
+    { key: 'ramp-car', label: 'Car ramp 1:8', icon: 'rampA', make: () => ({ type: 'ramp', w: 3.0, d: 0, h: 0, ratio: 8, rails: false, finish: 'concrete' }) },
+    { key: 'ramp-garden', label: 'Garden ramp', icon: 'rampA', make: () => ({ type: 'ramp', w: 1.5, d: 0, h: 0, ratio: 10, rails: false, finish: 'flagstone' }) },
+    { key: 'steps-sitout', label: 'Sit-out steps', icon: 'stepsS', make: () => ({ type: 'steps', style: 'straight', w: 2.4, d: 0, h: 0, cheeks: false, finish: 'stone' }) },
+    { key: 'steps-cheek', label: 'Steps with side walls', icon: 'stepsS', make: () => ({ type: 'steps', style: 'straight', w: 2.0, d: 0, h: 0, cheeks: true, finish: 'laterite' }) },
+    { key: 'steps-wide', label: 'Wide granite steps', icon: 'stepsS', make: () => ({ type: 'steps', style: 'straight', w: 4.5, d: 0, h: 0, cheeks: false, finish: 'marble' }) },
+    { key: 'steps-round', label: 'Semicircular steps', icon: 'stepsR', make: () => ({ type: 'steps', style: 'round', w: 3.2, d: 1.6, h: 0, cheeks: false, finish: 'stone' }) },
+    { key: 'steps-wrap', label: 'Three-sided steps', icon: 'stepsW', make: () => ({ type: 'steps', style: 'wrap', w: 3.6, d: 0, h: 0, cheeks: false, finish: 'stone' }) },
+  ] },
   { id: 'doors', label: 'Doors', items: [
     { key: 'door-single', label: 'Single door', icon: 'doorSingle', make: () => ({ type: 'door', style: 'single', width: 0.9, height: 2.1, open: 25, color: '#8a5a33', frameColor: '#f4f1ea' }) },
     { key: 'door-double', label: 'Double door', icon: 'doorDouble', make: () => ({ type: 'door', style: 'double', width: 1.6, height: 2.3, open: 20, color: '#5a3a22', frameColor: '#f4f1ea' }) },
@@ -1111,10 +1159,10 @@ export const CATALOG = [
 
 // Indoor / outdoor workspaces: which palette groups show, and which objects are editable.
 const CAT_SCOPE = { structure: 'both', rooms: 'indoor', floors: 'both', doors: 'both', windows: 'both', stairs: 'indoor', bath: 'indoor', interior: 'indoor', furniture: 'indoor',
-  bedroom: 'indoor', living: 'indoor', dining: 'indoor',
+  bedroom: 'indoor', living: 'indoor', dining: 'indoor', ramps: 'both',
   portico: 'outdoor', gates: 'outdoor', facade: 'outdoor', outdoor: 'outdoor', garden: 'outdoor', services: 'outdoor' };
 for (const c of CATALOG) c.scope = CAT_SCOPE[c.id] || 'both';
-const OUTDOOR_TYPES = new Set(['paving', 'tree', 'shrub', 'gate', 'boundary', 'fence', 'car', 'carport', 'pool', 'gazebo', 'lamp', 'hedge', 'flowerbed', 'pot', 'tulsi', 'bench',
+const OUTDOOR_TYPES = new Set(['ramp', 'steps', 'paving', 'tree', 'shrub', 'gate', 'boundary', 'fence', 'car', 'carport', 'pool', 'gazebo', 'lamp', 'hedge', 'flowerbed', 'pot', 'tulsi', 'bench',
   'swing', 'fountain', 'rocks', 'portico', 'pergola', 'well', 'septic', 'sitout', 'roof', 'balcony', 'cladding', 'louvers', 'frame', 'chimney', 'solar', 'watertank', 'acunit']);
 // 'outdoor', 'indoor' or 'structure' (walls, openings, dimensions — editable in both)
 export function objScope(o) {

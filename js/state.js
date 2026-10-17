@@ -88,7 +88,7 @@ export function levelElev(level, doc = store.doc) {
   return e;
 }
 // Site / landscape objects sit on natural ground rather than on the plinth.
-export const SITE_TYPES = new Set(['paving', 'tree', 'shrub', 'gate', 'boundary', 'fence', 'car', 'carport', 'pool', 'gazebo', 'lamp', 'hedge',
+export const SITE_TYPES = new Set(['ramp', 'steps', 'paving', 'tree', 'shrub', 'gate', 'boundary', 'fence', 'car', 'carport', 'pool', 'gazebo', 'lamp', 'hedge',
   'flowerbed', 'pot', 'tulsi', 'bench', 'swing', 'fountain', 'rocks', 'portico', 'pergola', 'well', 'septic', 'sitout']);
 export const baseElev = (o, doc = store.doc) => (o.level === 0 && SITE_TYPES.has(o.type) && !o.onPlinth ? 0 : levelElev(o.level, doc));
 export const wallsOn = (level, doc = store.doc) => doc.objects.filter((o) => o.type === 'wall' && o.level === level);
