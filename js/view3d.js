@@ -3,8 +3,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { store, emit, checkpoint, dropIfUnchanged, getObj, levelElev, baseElev, wallLen, projectToSegment, snapVal, fmtLen, levelCentroid } from './state.js';
-import { buildWall, buildItem, finalizeShadows, buildPlinth } from './builders3d.js';
+import { store, emit, checkpoint, dropIfUnchanged, getObj, levelElev, baseElev, wallLen, projectToSegment, projectToWall, snapVal, fmtLen, levelCentroid } from './state.js';
+import { inScope } from './catalog.js';
+import { buildWall, buildItem, finalizeShadows, buildPlinth, buildPlotMarks } from './builders3d.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // Things left out of elevation drawings so the facade reads clearly.
@@ -12,6 +13,12 @@ const ELEV_HIDE = new Set(['tree', 'shrub', 'car', 'lamp', 'paving', 'hedge', 'f
 const ELEV_DIRS = { front: [0, 0, 1], rear: [0, 0, -1], left: [-1, 0, 0], right: [1, 0, 0] };
 export const ELEV_NAMES = { front: 'Front elevation', rear: 'Rear elevation', left: 'Left side elevation', right: 'Right side elevation' };
 import { texture, setMaxAnisotropy } from './textures.js';
+
+// which 40 m square of the site an object belongs to (for merging meshes chunk by chunk)
+const chunkKey = (o) => {
+  const x = o.x1 !== undefined ? (o.x1 + o.x2) / 2 : o.x, y = o.y1 !== undefined ? (o.y1 + o.y2) / 2 : o.y;
+  return `${Math.floor(x / 40)}:${Math.floor(y / 40)}`;
+};
 
 export class View3D {
   constructor(container, app) {
@@ -97,7 +104,7 @@ export class View3D {
     this.sunHour = hour;
     const t = (hour - 6) / 13;
     const elev = Math.max(2, 68 * Math.sin(Math.PI * Math.min(1, Math.max(0, t)))) * (Math.PI / 180);
-    const az = (90 + 180 * t) * (Math.PI / 180);
+    const az = (90 + 180 * t + (store.doc.north || 0)) * (Math.PI / 180); // the sun's compass bearing, turned to the site's north
     const dir = new THREE.Vector3(Math.sin(az) * Math.cos(elev), Math.sin(elev), -Math.cos(az) * Math.cos(elev));
     this.sunDir = dir;
     this.sky.material.uniforms.sunPosition.value.copy(dir);
@@ -237,7 +244,8 @@ export class View3D {
 
   // Off-screen render (for the PDF): returns a PNG data URL at the requested pixel size.
   renderImage(w, h, { camera, elevation, metresWide, fs = 11, overlayScale = 1, type = 'image/jpeg', quality = 0.9 } = {}) {
-    const r = this.renderer, oldSize = r.getSize(new THREE.Vector2()), oldPR = r.getPixelRatio();
+    const r = this.renderer, oldSize = r.getSize(new THREE.Vector2()), oldPR = r.getPixelRatio(), selShown = this.selBox.visible;
+    this.selBox.visible = false;
     r.setPixelRatio(1); r.setSize(w, h, false);
     let cam = camera || this.camera, img;
     if (elevation) {
@@ -262,6 +270,7 @@ export class View3D {
       img = r.domElement.toDataURL(type, quality);
     }
     r.setPixelRatio(oldPR); r.setSize(oldSize.x, oldSize.y, false);
+    this.selBox.visible = selShown;
     return img;
   }
 
@@ -276,12 +285,10 @@ export class View3D {
   disposeModel(m) { m.traverse((x) => { if (x.isMesh && !x.geometry.userData?.shared) x.geometry.dispose(); }); }
   rebuild() {
     const doc = store.doc;
-    this.unbatch();
     for (const c of [...this.content.children]) this.content.remove(c);
-    if (this.plinthModel) { this.disposeModel(this.plinthModel); this.plinthModel = null; }
     // a change to the storeys or the plinth moves everything, so start afresh
     const global = JSON.stringify([doc.plinth, doc.plinthFinish, doc.levels]);
-    if (global !== this.cacheSig) { for (const m of this.cache?.values() || []) this.disposeModel(m); this.cache = new Map(); this.cacheSig = global; }
+    if (global !== this.cacheSig) { this.unbatch(); for (const m of this.cache?.values() || []) this.disposeModel(m); this.cache = new Map(); this.cacheSig = global; }
     const ops = new Map(), memo = new Map();
     for (const o of doc.objects) if (o.wallId) { if (!ops.has(o.wallId)) ops.set(o.wallId, []); ops.get(o.wallId).push(o); }
     const once = (k, f) => (memo.has(k) ? memo.get(k) : (memo.set(k, f()), memo.get(k)));
@@ -295,7 +302,7 @@ export class View3D {
     const maxLevel = this.forceLevel ?? (store.view.upper && !indoor ? Infinity : store.level);
     const hideRoof = this.forceNoRoof ?? (!store.view.roof || indoor);
     this.index = {};
-    const live = new Set();
+    const live = new Set(), shown = new Set(), touched = new Set();
     for (const o of doc.objects) {
       if (o.wallId) continue;
       live.add(o.id);
@@ -307,25 +314,56 @@ export class View3D {
       if (!m || m.userData.sig !== sig) {
         if (m) this.disposeModel(m);
         m = o.type === 'wall' ? buildWall(o, doc) : buildItem(o, doc);
+        touched.add(o.id);
         if (!m) { this.cache.delete(o.id); continue; }
-        m.userData.sig = sig;
+        m.userData.sig = sig; m.userData.chunk = chunkKey(o);
         this.cache.set(o.id, m);
       }
+      shown.add(o.id);
       this.content.add(m);
       this.index[o.id] = m;
     }
+    for (const id of this.shown || []) if (!shown.has(id)) touched.add(id);
+    for (const id of shown) if (!this.shown?.has(id)) touched.add(id);
+    this.shown = shown;
     for (const [id, m] of this.cache) if (!live.has(id)) { this.disposeModel(m); this.cache.delete(id); }
-    const plinth = buildPlinth(doc);
-    if (plinth) { this.content.add(plinth); this.plinthModel = plinth; }
+    // site-wide parts, rebuilt only when what they stand on changes
+    const pSig = JSON.stringify([doc.plinth, doc.plinthFinish, doc.objects.filter((o) => o.level === 0 && (o.type === 'wall' || (o.type === 'floor' && !o.z)))
+      .map((o) => [o.x1, o.y1, o.x2, o.y2, o.bulge, o.thickness, o.kind, o.hidden, o.x, o.y, o.w, o.d, o.rot, o.shape, o.pts, o.skew])]);
+    if (pSig !== this.plinthSig) {
+      if (this.plinthModel) this.disposeModel(this.plinthModel);
+      this.plinthModel = buildPlinth(doc); this.plinthSig = pSig; touched.add('#plinth');
+      if (this.plinthModel) this.plinthModel.userData.chunk = '#plinth';
+    }
+    if (this.plinthModel) this.content.add(this.plinthModel);
+    const mSig = this.elev ? '' : JSON.stringify(doc.plot?.pts || null);
+    if (mSig !== this.marksSig) {
+      if (this.plotModel) this.disposeModel(this.plotModel);
+      this.plotModel = this.elev ? null : buildPlotMarks(doc); this.marksSig = mSig; touched.add('#plot');
+      if (this.plotModel) this.plotModel.userData.chunk = '#plot';
+    }
+    if (this.plotModel) this.content.add(this.plotModel);
+    // merged chunks that contain anything changed go back to their separate meshes until re-merged
+    this.dirtyChunks ??= new Set();
+    for (const id of touched) {
+      if (id === '#plinth' || id === '#plot') { this.dirtyChunks.add(id); continue; }
+      const was = this.chunkOf?.get(id); if (was) this.dirtyChunks.add(was);
+      const m = this.index[id]; if (m) this.dirtyChunks.add(m.userData.chunk);
+    }
+    this.releaseChunks(this.dirtyChunks);
     finalizeShadows(this.content);
     if (this.elev) this.fitElevation();
-    this.player?.collect();
-    // keep sun shadow frustum around the model
-    const box = new THREE.Box3().setFromObject(this.content);
-    if (!box.isEmpty()) {
-      this.focus = box.getCenter(new THREE.Vector3());
-      const size = box.getSize(new THREE.Vector3()), r = Math.max(20, Math.max(size.x, size.z) * 0.75 + 8);
-      const sc = this.sun.shadow.camera;
+    if (this.player?.active) this.player.collect();
+    // keep the sun's shadow frustum around the site (from the plan, without measuring every mesh)
+    let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+    for (const o of doc.objects) {
+      if (o.wallId || o.type === 'guide' || o.type === 'dimension') continue;
+      const xs = o.x1 !== undefined ? [o.x1, o.x2] : [o.x - (o.w || 0) / 2, o.x + (o.w || 0) / 2], zs = o.y1 !== undefined ? [o.y1, o.y2] : [o.y - (o.d || 0) / 2, o.y + (o.d || 0) / 2];
+      x0 = Math.min(x0, ...xs); x1 = Math.max(x1, ...xs); z0 = Math.min(z0, ...zs); z1 = Math.max(z1, ...zs);
+    }
+    if (x0 < Infinity) {
+      this.focus = new THREE.Vector3((x0 + x1) / 2, 0, (z0 + z1) / 2);
+      const r = Math.max(20, Math.max(x1 - x0, z1 - z0) * 0.75 + 8), sc = this.sun.shadow.camera;
       sc.left = -r; sc.right = r; sc.top = r; sc.bottom = -r; sc.updateProjectionMatrix();
       this.updateSunPos();
     }
@@ -333,61 +371,82 @@ export class View3D {
     this.batchAt = performance.now() + 300;
   }
 
-  // Large scenes: merge every static mesh that shares a material into one mesh, so thousands of
-  // draw calls become a few hundred. The originals move to layer 1: not drawn, still picked and collided with.
+  // Large scenes: static meshes that share a material are merged, chunk by chunk (40 m squares of the site),
+  // so thousands of draw calls become a few hundred and an edit only re-merges its own chunk.
+  // The originals move to layer 1: not drawn, still picked and collided with.
   batchStatic() {
-    let count = 0;
-    this.content.traverse((m) => { if (m.isMesh) count++; });
-    if (count < 250) return;
-    const moving = (m) => { for (let p = m; p && p !== this.content; p = p.parent) if (p.userData.doorLeaf || p.userData.slideDoor) return true; return false; };
-    const groups = new Map();
-    this.content.updateMatrixWorld(true);
-    const add = (m, mat, start, count) => {
-      const key = `${mat.uuid}|${m.castShadow}|${m.receiveShadow}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push({ m, mat, start, count });
-    };
-    const batched = [];
-    this.content.traverseVisible((m) => {
-      if (!m.isMesh || m.isInstancedMesh || m.isSkinnedMesh || moving(m)) return;
-      const n = m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count;
-      // multi-material meshes (walls: inner and outer faces) are split by material group
-      if (Array.isArray(m.material)) for (const gr of m.geometry.groups) { const mat = m.material[gr.materialIndex]; if (mat) add(m, mat, gr.start, Math.min(gr.count, n - gr.start)); }
-      else add(m, m.material, 0, n);
-      batched.push(m);
-    });
-    const batch = new THREE.Group();
-    batch.name = 'batch';
-    for (const list of groups.values()) {
-      const mat = list[0].mat, names = ['position', 'normal', 'uv', ...(mat.vertexColors ? ['color'] : [])], geos = [];
-      for (const { m, start, count } of list) {
-        const src = m.geometry, g = new THREE.BufferGeometry(), n = src.attributes.position.count;
-        for (const k of names) {
-          const a = src.attributes[k];
-          if (a) g.setAttribute(k, a.isInterleavedBufferAttribute ? a.clone() : a.clone());
-          else if (k === 'uv') g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
-          else if (k === 'color') g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(n * 3).fill(1), 3));
-        }
-        if (!g.attributes.normal) g.computeVertexNormals();
-        g.setIndex(new THREE.BufferAttribute(src.index ? Uint32Array.from(src.index.array.subarray(start, start + count)) : Uint32Array.from({ length: count }, (_, i) => start + i), 1));
-        g.applyMatrix4(m.matrixWorld);
-        geos.push(g);
-      }
-      const merged = mergeGeometries(geos, false);
-      geos.forEach((g) => g.dispose());
-      if (!merged) continue;
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.castShadow = list[0].m.castShadow; mesh.receiveShadow = list[0].m.receiveShadow;
-      mesh.matrixAutoUpdate = false; mesh.frustumCulled = false;
-      batch.add(mesh);
+    if (!this.dirtyChunks?.size) return;
+    if (!this.chunks?.size) {
+      let count = 0;
+      this.content.traverse((m) => { if (m.isMesh) count++; });
+      if (count < 250) return;
     }
-    for (const m of batched) m.layers.set(1);
-    this.batch = batch;
-    this.scene.add(batch);
-    // each door leaf and gate leaf: its parts merged per material in the leaf's own frame, so it still swings
-    this.leafBatches = [];
-    this.content.traverse((pv) => {
-      if (!pv.userData.doorLeaf && !pv.userData.slideDoor) return;
+    this.chunks ??= new Map(); this.chunkOf ??= new Map();
+    const members = new Map();
+    for (const m of this.content.children) {
+      const k = m.userData.chunk;
+      if (!k || !this.dirtyChunks.has(k)) continue;
+      if (!members.has(k)) members.set(k, []);
+      members.get(k).push(m);
+    }
+    this.content.updateMatrixWorld(true);
+    const moving = (m) => { for (let p = m; p && p !== this.content; p = p.parent) if (p.userData.doorLeaf || p.userData.slideDoor) return true; return false; };
+    for (const [k, models] of members) {
+      const groups = new Map(), batched = [];
+      const add = (m, mat, start, count) => {
+        const key = `${mat.uuid}|${m.castShadow}|${m.receiveShadow}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push({ m, mat, start, count });
+      };
+      for (const model of models) {
+        if (model.userData.id) this.chunkOf.set(model.userData.id, k);
+        model.traverseVisible((m) => {
+          if (!m.isMesh || m.isInstancedMesh || m.isSkinnedMesh || m.userData.leafBatch || moving(m)) return;
+          const n = m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count;
+          // multi-material meshes (walls: inner and outer faces) are split by material group
+          if (Array.isArray(m.material)) for (const gr of m.geometry.groups) { const mat = m.material[gr.materialIndex]; if (mat) add(m, mat, gr.start, Math.min(gr.count, n - gr.start)); }
+          else add(m, m.material, 0, n);
+          batched.push(m);
+        });
+        this.mergeLeaves(model);
+      }
+      const group = new THREE.Group();
+      group.name = 'batch ' + k;
+      for (const list of groups.values()) {
+        const mat = list[0].mat, names = ['position', 'normal', 'uv', ...(mat.vertexColors ? ['color'] : [])], geos = [];
+        for (const { m, start, count } of list) {
+          const src = m.geometry, g = new THREE.BufferGeometry(), n = src.attributes.position.count;
+          for (const key of names) {
+            const at = src.attributes[key];
+            if (at) g.setAttribute(key, at.clone());
+            else if (key === 'uv') g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
+            else if (key === 'color') g.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(n * 3).fill(1), 3));
+          }
+          if (!g.attributes.normal) g.computeVertexNormals();
+          g.setIndex(new THREE.BufferAttribute(src.index ? Uint32Array.from(src.index.array.subarray(start, start + count)) : Uint32Array.from({ length: count }, (_, i) => start + i), 1));
+          g.applyMatrix4(m.matrixWorld);
+          geos.push(g);
+        }
+        const merged = mergeGeometries(geos, false);
+        geos.forEach((g) => g.dispose());
+        if (!merged) continue;
+        const mesh = new THREE.Mesh(merged, mat);
+        mesh.castShadow = list[0].m.castShadow; mesh.receiveShadow = list[0].m.receiveShadow;
+        mesh.matrixAutoUpdate = false; mesh.frustumCulled = false;
+        group.add(mesh);
+      }
+      for (const m of batched) m.layers.set(1);
+      this.scene.add(group);
+      this.chunks.set(k, { group, meshes: batched });
+    }
+    this.dirtyChunks.clear();
+  }
+  // each door or gate leaf: its parts merged per material in the leaf's own frame, so it still swings
+  mergeLeaves(model) {
+    model.traverse((pv) => {
+      if ((!pv.userData.doorLeaf && !pv.userData.slideDoor) || pv.userData.leafMerged) return;
+      pv.userData.leafMerged = true;
+      pv.updateMatrixWorld(true);
       const inv = pv.matrixWorld.clone().invert(), byMat = new Map(), parts = [];
       pv.traverse((m) => {
         if (!m.isMesh || Array.isArray(m.material) || m.isInstancedMesh) return;
@@ -399,11 +458,10 @@ export class View3D {
         const geos = list.map((m) => {
           const src = m.geometry, g = new THREE.BufferGeometry(), n = src.attributes.position.count;
           g.setAttribute('position', src.attributes.position.clone());
-          g.setAttribute('normal', src.attributes.normal ? src.attributes.normal.clone() : src.attributes.position.clone());
+          if (src.attributes.normal) g.setAttribute('normal', src.attributes.normal.clone());
           g.setAttribute('uv', src.attributes.uv ? src.attributes.uv.clone() : new THREE.Float32BufferAttribute(new Float32Array(n * 2), 2));
           if (!src.attributes.normal) g.computeVertexNormals();
-          g.setIndex(src.index ? src.index.clone() : null);
-          if (!src.index) g.setIndex(new THREE.BufferAttribute(Uint32Array.from({ length: n }, (_, i) => i), 1));
+          g.setIndex(src.index ? src.index.clone() : new THREE.BufferAttribute(Uint32Array.from({ length: n }, (_, i) => i), 1));
           return g.applyMatrix4(inv.clone().multiply(m.matrixWorld));
         });
         const merged = mergeGeometries(geos, false);
@@ -411,20 +469,27 @@ export class View3D {
         if (!merged) continue;
         const mesh = new THREE.Mesh(merged, list[0].material);
         mesh.castShadow = list[0].castShadow; mesh.receiveShadow = true; mesh.userData.leafBatch = true;
-        pv.add(mesh); this.leafBatches.push(mesh);
+        pv.add(mesh);
         for (const m of list) m.layers.set(1);
       }
     });
   }
+  // put chunks back to separate meshes (they are merged again when the scene settles)
+  releaseChunks(keys) {
+    for (const k of keys) {
+      const c = this.chunks?.get(k);
+      if (!c) continue;
+      this.scene.remove(c.group);
+      c.group.traverse((m) => { if (m.isMesh) m.geometry.dispose(); });
+      for (const m of c.meshes) m.layers.set(0);
+      this.chunks.delete(k);
+    }
+  }
   unbatch() {
     this.batchAt = 0;
-    if (!this.batch) return;
-    this.scene.remove(this.batch);
-    this.batch.traverse((m) => { if (m.isMesh) m.geometry.dispose(); });
-    this.batch = null;
-    for (const m of this.leafBatches || []) { m.parent?.remove(m); m.geometry.dispose(); }
-    this.leafBatches = [];
-    this.content.traverse((m) => { if (m.isMesh) m.layers.set(0); });
+    if (this.chunks) this.releaseChunks([...this.chunks.keys()]);
+    this.chunkOf = new Map();
+    this.dirtyChunks = new Set();
   }
   updateSelection() {
     const id = store.selectedId;
@@ -551,7 +616,7 @@ export class View3D {
       }
       const hit = this.pickId(e);
       const o = hit && getObj(hit.id);
-      if (o && !o.locked && o.id === store.selectedId && o.level === store.level) {
+      if (o && !o.locked && o.id === store.selectedId && o.level === store.level && inScope(o, store.view.scope)) {
         const base = o.type === 'wall' || o.wallId ? levelElev(o.level) : baseElev(o);
         const gp = this.groundPoint(e, base);
         if (!gp) return;
@@ -579,7 +644,7 @@ export class View3D {
       else if (o.wallId) {
         const w = getObj(o.wallId);
         if (w) {
-          const pr = projectToSegment(gp.x, gp.z, w.x1, w.y1, w.x2, w.y2), L = wallLen(w);
+          const pr = projectToWall(gp.x, gp.z, w), L = wallLen(w);
           o.t = Math.max(o.width / 2, Math.min(L - o.width / 2, snapVal(pr.t * L, 0.05)));
         }
       } else { o.x = orig.x + dx; o.y = orig.y + dz; }
@@ -600,7 +665,8 @@ export class View3D {
       this.down = null;
       if (moved < 5 && e.button === 0 && store.tool !== 'place') {
         const hit = this.pickId(e);
-        const o = hit && getObj(hit.id);
+        let o = hit && getObj(hit.id);
+        if (o && !inScope(o, store.view.scope)) { this.app.toast(`That's locked in the ${store.view.scope} workspace — switch to All to edit it`); o = null; }
         if (o && o.level !== store.level) { store.level = o.level; emit('level'); }
         this.app.select(o ? o.id : null);
       }

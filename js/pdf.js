@@ -5,6 +5,7 @@ import {
   store, levelElev, wallLen, wallAng, wallArc, wallPointAt, wallSamples, openingsOf, wallsOn, fmtLen, fmtArea, openingTags, toUnit, unitLabel, isImperial, FT,
 } from './state.js';
 import { TYPES, floorPoly, polyArea, labelForObj, stairCheck, objScope } from './catalog.js';
+import { plotOf, sideLen, CENT } from './plot.js';
 
 const PAGE = { w: 420, h: 297 };          // A3 landscape, mm
 const M = 10;                             // border margin
@@ -102,10 +103,13 @@ export async function exportDrawingSet({ plan, view, toast, progress }) {
     pdf.setFontSize(7); pdf.text('0', x - 0.8, y + 5); pdf.text(T(fmtLen(len)), x + mm - 4, y + 5);
     pdf.text(`SCALE 1:${S}`, x, y - 1.5);
   }
+  // north arrow turned to the site's north (degrees clockwise from the top of the plan)
   function northArrow(x, y) {
+    const a = ((doc.north || 0) * Math.PI) / 180, R = (px, py) => [x + px * Math.cos(a) - py * Math.sin(a), y + px * Math.sin(a) + py * Math.cos(a)];
     pdf.setLineWidth(0.3); pdf.circle(x, y, 6);
-    pdf.setFillColor(30); pdf.triangle(x, y - 5, x + 2.6, y + 3, x - 2.6, y + 3, 'F');
-    pdf.setFontSize(8); pdf.setFont('helvetica', 'bold'); pdf.text('N', x - 1.3, y - 7); pdf.setFont('helvetica', 'normal');
+    pdf.setFillColor(30); pdf.triangle(...R(0, -5), ...R(2.6, 3), ...R(-2.6, 3), 'F');
+    const [tx, ty] = R(0, -8.2);
+    pdf.setFontSize(8); pdf.setFont('helvetica', 'bold'); pdf.text('N', tx - 1.3, ty + 1.2); pdf.setFont('helvetica', 'normal');
   }
   const pickScale = (wM, hM, wMm, hMm) => SCALES.find((S) => (wM * 1000) / S <= wMm && (hM * 1000) / S <= hMm) || 1000;
 
@@ -126,7 +130,9 @@ export async function exportDrawingSet({ plan, view, toast, progress }) {
   };
   // Draw the plan of one storey into the drawing area at a standard scale.
   async function planImage(level, objs, filter, area, pad = 3.2) {
-    const b = boundsOf(objs), bw = b.x1 - b.x0 + pad * 2, bh = b.y1 - b.y0 + pad * 2;
+    const b = boundsOf(objs), pl = !filter && level === 0 ? plotOf(doc) : null;
+    if (pl) for (const [x, y] of pl.pts) { b.x0 = Math.min(b.x0, x); b.y0 = Math.min(b.y0, y); b.x1 = Math.max(b.x1, x); b.y1 = Math.max(b.y1, y); }
+    const bw = b.x1 - b.x0 + pad * 2, bh = b.y1 - b.y0 + pad * 2;
     const S = pickScale(bw, bh, area.w, area.h);
     const wmm = Math.min(area.w, (bw * 1000) / S + 10), hmm = Math.min(area.h, (bh * 1000) / S + 10);
     const cssW = wmm * PX_PER_MM, cssH = hmm * PX_PER_MM, dpr = 2.4;
@@ -179,7 +185,9 @@ export async function exportDrawingSet({ plan, view, toast, progress }) {
     ['Total floor area', fmtArea(levelArea.reduce((a, b) => a + b, 0))], ['Plinth height', fmtLen(doc.plinth || 0)],
     ['Height to top', fmtLen(topH + (roofObj && roofObj.style !== 'flat' ? (roofObj.d / 2) * Math.tan((roofObj.pitch * Math.PI) / 180) : 0))],
     ['Rooms', String(rooms.length)], ['Doors / windows', `${ops.filter((o) => o.type === 'door').length} / ${ops.filter((o) => o.type === 'window').length}`],
-    ['Plot', doc.plot || '-'], ['Units', ulabel]];
+    ['Plot', (() => { const p = plotOf(doc); if (!p) return doc.plotNote || '-'; const a = polyArea(p.pts); return `${fmtArea(a)} (${(a / CENT).toFixed(2)} cents)`; })()],
+    ...(plotOf(doc) ? [['Plot sides', plotOf(doc).pts.map((_, i) => fmtLen(sideLen(plotOf(doc).pts, i))).join(' / ')]] : []),
+    ['North', `${Math.round(doc.north || 0)}° from top of sheet`], ['Units', ulabel]];
   table(kx, AREA.y + 25, [kw * 0.55, kw * 0.45], ['Item', 'Value'], kd, { rh: 6.2, fs: 8.5 });
   const idxY = AREA.y + 168;
   h1('Drawing index', AREA.x, idxY, 11);

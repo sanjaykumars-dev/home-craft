@@ -215,6 +215,7 @@ export class Tour {
     if (v.elev) v.setElevation(null);
     if (v.walk) v.setWalk(false);
     this.saved = { pos: v.camera.position.clone(), target: v.controls.target.clone(), level: store.level };
+    this.savedFov = v.camera.fov;
     this.stops = this.buildStops();
     this.active = true; this.playing = true;
     v.controls.enabled = false;
@@ -229,14 +230,15 @@ export class Tour {
     const v = this.view;
     this.active = false;
     speechSynthesis?.cancel();
-    clearTimeout(this.timer);
+    clearTimeout(this.timer); clearTimeout(this.fadeTimer);
+    this.fade && (this.fade.style.opacity = 0);
     $('#tour').hidden = true;
     v.el.classList.remove('touring');
     if (this.guide) v.scene.remove(this.guide);
     v.forceNoRoof = undefined; v.forceLevel = undefined; v.markDirty();
     if (this.saved) { v.camera.position.copy(this.saved.pos); v.controls.target.copy(this.saved.target); }
     v.controls.enabled = true;
-    v.camera.fov = 45; v.camera.updateProjectionMatrix();
+    v.camera.fov = this.savedFov ?? 45; v.camera.updateProjectionMatrix();
   }
   togglePlay() {
     this.playing = !this.playing;
@@ -286,7 +288,9 @@ export class Tour {
     };
     if (jump) {
       this.fade.style.opacity = 1;
-      setTimeout(() => {
+      clearTimeout(this.fadeTimer);
+      this.fadeTimer = setTimeout(() => {
+        if (!this.active) return;
         setScene();
         if (!groundStop) { v.camera.position.copy(st.pos); v.controls.target.copy(st.target); v.camera.lookAt(st.target); }
         startStop();

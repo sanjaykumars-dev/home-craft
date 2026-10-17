@@ -89,7 +89,7 @@ export function buildWall(w, doc) {
   const outer = ext ? finishMat(w.finish || 'plaster', w.color || '#efe6d6') : inner;
   const mats = [outer, outer, inner, inner, out > 0 ? outer : inner, out < 0 ? outer : inner];
 
-  const ops = openingsOf(w.id, doc).map((o) => {
+  const ops = openingsOf(w.id, doc).filter((o) => !o.hidden).map((o) => {
     const y0 = o.type === 'door' ? 0 : o.sill;
     return { o, a: Math.max(0, o.t - o.width / 2), b: Math.min(L, o.t + o.width / 2), y0, y1: Math.min(H - 0.02, y0 + o.height) };
   }).sort((p, q) => p.a - q.a);
@@ -1414,7 +1414,7 @@ export function buildPlinth(doc) {
   if (h < 0.02) return null;
   const g = new THREE.Group(), mat = finishMat(doc.plinthFinish || 'stone', '#ffffff'), band = finishMat('concrete', '#cfc9bf');
   for (const o of doc.objects) {
-    if (o.type !== 'floor' || o.level !== 0 || o.z) continue;
+    if (o.type !== 'floor' || o.level !== 0 || o.z || o.hidden) continue;
     const pts = floorPoly(o), part = new THREE.Group();
     part.add(prism(pts, 0, h - 0.1, mat), prism(pts, h - 0.1, h - 0.005, band)); // plinth beam band on top
     part.position.set(o.x, 0, o.y); part.rotation.y = -(o.rot || 0) * DEG;
@@ -1422,7 +1422,7 @@ export function buildPlinth(doc) {
   }
   // plinth walls under every ground-floor wall, slightly projecting like a real plinth offset
   for (const w of doc.objects) {
-    if (w.type !== 'wall' || w.level !== 0) continue;
+    if (w.type !== 'wall' || w.level !== 0 || w.hidden) continue;
     const L = wallLen(w), T = w.thickness + (w.kind === 'interior' ? 0 : 0.06);
     if (wallArc(w)) {
       const n = Math.max(1, Math.ceil(L / 0.3)), step = L / n;
@@ -1437,6 +1437,20 @@ export function buildPlinth(doc) {
     m.position.set(w.x1, 0, w.y1); m.rotation.y = -wallAng(w);
     g.add(m);
   }
+  return g;
+}
+
+// The plot on the ground: a white property line with a concrete survey peg at every corner.
+export function buildPlotMarks(doc) {
+  const pts = doc.plot?.pts;
+  if (!pts || pts.length < 3) return null;
+  const g = new THREE.Group(), line = colorMat('#f8fafc', 0.8), peg = finishMat('concrete', '#d6d3cc');
+  pts.forEach(([x, y], i) => {
+    const [x2, y2] = pts[(i + 1) % pts.length], L = Math.hypot(x2 - x, y2 - y);
+    const m = box(L, 0.012, 0.08, line, (x + x2) / 2, 0.012, (y + y2) / 2);
+    m.rotation.y = -Math.atan2(y2 - y, x2 - x); m.userData.passable = true; m.userData.noShadow = true;
+    g.add(m, boxB(0.15, 0.3, 0.15, peg, x, 0, y));
+  });
   return g;
 }
 

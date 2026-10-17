@@ -4,9 +4,15 @@ import {
   toLocal, toWorld, levelCentroid, outwardSign, fmtLen, snapVal, fromUnit, toUnit, DEG, FT, uid,
   dims, wallDimLen, setWallLength, fmtArea, getObj, openingTags, isDimLocked,
 } from './state.js';
+import { plotOf, setbackPoly, setSide, plotEditBlock, CENT, SQFT } from './plot.js';
 import { TYPES, CATALOG_INDEX, drawOpening2D, floorPoly, polyArea, pointInPoly, normalizeCustom, setSideLength, ROOM_PRESETS, inScope, presetItems } from './catalog.js';
 
 const PAPER = '#fbfaf7';
+// a typed length in the current unit; in feet, 10'6 means 10 ft 6 in
+const typedLen = (s) => {
+  const m = String(s).match(/^\s*([\d.]*)\s*'\s*([\d.]*)/);
+  return fromUnit(m ? (parseFloat(m[1]) || 0) + (parseFloat(m[2]) || 0) / 12 : parseFloat(s));
+};
 const chordHalf = (w) => Math.hypot(w.x2 - w.x1, w.y2 - w.y1) / 2;
 const SLABS = new Set(['floor', 'paving', 'flowerbed']);
 // drawing order: the type's layer plus the user's bring-forward / send-back offset
@@ -35,6 +41,7 @@ export class Plan2D {
     this.ctx = canvas.getContext('2d');
     this.app = app;
     this.scale = 36; this.ox = 120; this.oy = 120;
+    this.vr = 0; // view rotation (radians, clockwise on screen); the plan is always seen from the top
     this.mouse = { sx: 0, sy: 0, x: 0, y: 0, inside: false };
     this.drag = null; this.draft = null; this.preview = null; this.measure = null;
     this.typed = ''; this.hoverId = null; this.snapMark = null; this.shift = false; this.space = false;
@@ -89,14 +96,33 @@ export class Plan2D {
     this.redraw();
   }
   redraw() { this.dirty = true; }
-  w2s(x, y) { return [x * this.scale + this.ox, y * this.scale + this.oy]; }
-  s2w(sx, sy) { return [(sx - this.ox) / this.scale, (sy - this.oy) / this.scale]; }
+  w2s(x, y) {
+    const c = Math.cos(this.vr), s = Math.sin(this.vr);
+    return [(x * c - y * s) * this.scale + this.ox, (x * s + y * c) * this.scale + this.oy];
+  }
+  s2w(sx, sy) {
+    const c = Math.cos(this.vr), s = Math.sin(this.vr), u = (sx - this.ox) / this.scale, v = (sy - this.oy) / this.scale;
+    return [u * c + v * s, -u * s + v * c];
+  }
+  // Turn the top view: by a step, or so that a compass direction points up the screen.
+  setRotation(rad) {
+    const cx = this.W / 2, cy = this.H / 2, [wx, wy] = this.s2w(cx, cy);
+    this.vr = Math.atan2(Math.sin(rad), Math.cos(rad));
+    const [sx, sy] = this.w2s(wx, wy);
+    this.ox += cx - sx; this.oy += cy - sy; // keep the same spot in the middle of the screen
+    this.redraw();
+  }
+  // compass bearing (degrees, clockwise from north) that points up the screen
+  get upBearing() { return ((((-this.vr * 180) / Math.PI - (store.doc.north || 0)) % 360) + 360) % 360; }
   evPos(e) {
     const r = this.c.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
     const [x, y] = this.s2w(sx, sy);
     return { sx, sy, x, y };
   }
-  worldT() { const d = this.dpr, s = this.scale; this.ctx.setTransform(d * s, 0, 0, d * s, d * this.ox, d * this.oy); }
+  worldT() {
+    const d = this.dpr, s = this.scale, c = Math.cos(this.vr), n = Math.sin(this.vr);
+    this.ctx.setTransform(d * s * c, d * s * n, -d * s * n, d * s * c, d * this.ox, d * this.oy);
+  }
   screenT() { this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); }
 
   bounds(all = true) {
@@ -110,15 +136,20 @@ export class Plan2D {
         for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) add(...toWorld(o, sx * (o.w / 2 + ov), sy * (o.d / 2 + ov)));
       }
     }
+    const plot = plotOf(store.doc);
+    if (plot) for (const [x, y] of plot.pts) add(x, y);
     return x0 === Infinity ? null : { x0, y0, x1, y1 };
   }
   fit() {
     const b = this.bounds();
     if (!b || !this.W) { this.scale = 36; this.ox = this.W / 2 || 200; this.oy = this.H / 2 || 200; this.redraw(); return; }
-    const pad = 70;
-    this.scale = Math.max(4, Math.min(200, Math.min((this.W - pad * 2) / (b.x1 - b.x0 || 1), (this.H - pad * 2) / (b.y1 - b.y0 || 1))));
-    this.ox = this.W / 2 - ((b.x0 + b.x1) / 2) * this.scale;
-    this.oy = this.H / 2 - ((b.y0 + b.y1) / 2) * this.scale;
+    const pad = 70, c = Math.cos(this.vr), s = Math.sin(this.vr);
+    // extents of the bounds as they appear on the (possibly rotated) screen
+    const rot = [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]].map(([x, y]) => [x * c - y * s, x * s + y * c]);
+    const rx0 = Math.min(...rot.map((p) => p[0])), rx1 = Math.max(...rot.map((p) => p[0])), ry0 = Math.min(...rot.map((p) => p[1])), ry1 = Math.max(...rot.map((p) => p[1]));
+    this.scale = Math.max(4, Math.min(200, Math.min((this.W - pad * 2) / (rx1 - rx0 || 1), (this.H - pad * 2) / (ry1 - ry0 || 1))));
+    this.ox = this.W / 2 - ((rx0 + rx1) / 2) * this.scale;
+    this.oy = this.H / 2 - ((ry0 + ry1) / 2) * this.scale;
     this.redraw();
   }
   zoomBy(f, sx = this.W / 2, sy = this.H / 2) {
@@ -382,6 +413,12 @@ export class Plan2D {
   onDown(e) {
     this.c.setPointerCapture(e.pointerId);
     const p = this.evPos(e);
+    if (this.compass && Math.hypot(p.sx - this.compass.x, p.sy - this.compass.y) < this.compass.r && e.button === 0) {
+      const northUp = -((store.doc.north || 0) * Math.PI) / 180;
+      this.setRotation(Math.abs(Math.atan2(Math.sin(this.vr - northUp), Math.cos(this.vr - northUp))) < 1e-3 ? 0 : northUp);
+      this.app.onViewRotate?.(this);
+      return;
+    }
     this.shift = e.shiftKey;
     if (e.button === 1 || this.space || (e.button === 2 && store.tool === 'select')) {
       this.drag = { mode: 'pan', sx: p.sx, sy: p.sy, ox: this.ox, oy: this.oy };
@@ -392,6 +429,15 @@ export class Plan2D {
       if (store.tool === 'wall' && this.draft) this.finishDraft();
       else this.app.setTool('select');
       return;
+    }
+    const plot = plotOf(store.doc);
+    if (store.tool === 'select' && plot?.edit && e.button === 0) {
+      const i = plot.pts.findIndex(([x, y]) => { const [sx, sy] = this.w2s(x, y); return Math.hypot(sx - p.sx, sy - p.sy) < HANDLE + 2; });
+      if (i >= 0) {
+        const why = plotEditBlock(plot, 'corner', i);
+        if (why) { this.app.toast(why, true); return; }
+        checkpoint(); this.drag = { mode: 'plotCorner', plot, i }; return;
+      }
     }
     switch (store.tool) {
       case 'place': {
@@ -466,6 +512,8 @@ export class Plan2D {
     this.app.showCoords(p.x, p.y);
     const d = this.drag;
     if (!d) {
+      const pl = plotOf(store.doc);
+      if (store.tool === 'select' && pl?.edit && pl.pts.some(([x, y]) => { const [sx, sy] = this.w2s(x, y); return Math.hypot(sx - p.sx, sy - p.sy) < HANDLE + 2; })) { this.c.style.cursor = 'move'; this.redraw(); return; }
       if (store.tool === 'select') {
         const h = this.hitHandle(p);
         const hit = h ? null : this.hitTest(p);
@@ -550,6 +598,7 @@ export class Plan2D {
         break;
       }
       case 'room': case 'stairdraw': d.b = this.snapPoint(p); break;
+      case 'plotCorner': { const pt = this.snapPoint(p); d.plot.pts[d.i] = [+pt.x.toFixed(4), +pt.y.toFixed(4)]; emit('doc'); break; }
       case 'measure': this.measure.b = this.snapPoint(p); break;
     }
     this.redraw();
@@ -563,7 +612,7 @@ export class Plan2D {
     if (d.mode === 'room') this.createRoom(d.a, d.b);
     if (d.mode === 'stairdraw') this.createStairs(d.a, d.b);
     if (d.mode === 'vertex') normalizeCustom(d.o);
-    if (['move', 'moveWall', 'endpoint', 'moveOpening', 'resize', 'rotate', 'vertex', 'bend'].includes(d.mode)) { dropIfUnchanged(); emit('doc'); }
+    if (['move', 'moveWall', 'endpoint', 'moveOpening', 'resize', 'rotate', 'vertex', 'bend', 'plotCorner'].includes(d.mode)) { dropIfUnchanged(); emit('doc'); }
     this.redraw();
   }
 
@@ -578,7 +627,7 @@ export class Plan2D {
       if (/^[0-9.]$/.test(e.key) || (e.key === "'" && store.doc.units === 'ft')) { this.typed += e.key; this.redraw(); return true; }
       if (e.key === 'Backspace' && this.typed) { this.typed = this.typed.slice(0, -1); this.redraw(); return true; }
       if (e.key === 'Enter') {
-        const L = fromUnit(parseFloat(this.typed));
+        const L = typedLen(this.typed);
         const last = this.draft.pts[this.draft.pts.length - 1], pv = this.preview || this.mouse;
         const a = Math.atan2(pv.y - last.y, pv.x - last.x);
         if (L > 0) this.addWallTo({ x: +(last.x + Math.cos(a) * L).toFixed(4), y: +(last.y + Math.sin(a) * L).toFixed(4) });
@@ -661,6 +710,12 @@ export class Plan2D {
     inp.addEventListener('blur', () => done(true));
   }
   applyDim(hit, v) {
+    if (hit.kind === 'plotSide') {
+      const why = plotEditBlock(hit.o, 'len', hit.i);
+      if (why) { this.app.toast(why, true); return; }
+      checkpoint(); setSide(hit.o, hit.i, v); emit('doc'); this.app.toast(`Plot side set to ${fmtLen(v)}`);
+      return;
+    }
     const o = hit.o, key = { wall: 'length', itemW: 'w', itemD: 'd', opWidth: 'width', gap: 't', gapEnd: 't', dimobj: 'length', side: 'side' + hit.i }[hit.kind];
     if (isDimLocked(o, key) || o.locked) { this.app.toast('That dimension is locked — unlock it in the properties panel', true); return; }
     if (hit.kind === 'side' && isDimLocked(o, 'side' + ((hit.i + 1) % (o.pts?.length || 4)))) { this.app.toast('The next side is locked, so this corner cannot move', true); return; }
@@ -683,11 +738,11 @@ export class Plan2D {
   // Render the plan into another canvas for printing (white paper, no grid or UI), at a given scale.
   renderTo(canvas, { level, scale, ox, oy, width, height, filter }) {
     this.printFilter = filter || null;
-    const save = { c: this.c, ctx: this.ctx, W: this.W, H: this.H, dpr: this.dpr, scale: this.scale, ox: this.ox, oy: this.oy, level: store.level, sel: store.selectedId, hover: this.hoverId };
-    Object.assign(this, { c: canvas, ctx: canvas.getContext('2d'), W: width, H: height, dpr: canvas.width / width, scale, ox, oy, print: true, hoverId: null });
+    const save = { c: this.c, ctx: this.ctx, W: this.W, H: this.H, dpr: this.dpr, scale: this.scale, ox: this.ox, oy: this.oy, vr: this.vr, level: store.level, sel: store.selectedId, hover: this.hoverId };
+    Object.assign(this, { c: canvas, ctx: canvas.getContext('2d'), W: width, H: height, dpr: canvas.width / width, scale, ox, oy, vr: 0, print: true, hoverId: null });
     store.level = level; store.selectedId = null;
     try { this.draw(); } finally {
-      Object.assign(this, { c: save.c, ctx: save.ctx, W: save.W, H: save.H, dpr: save.dpr, scale: save.scale, ox: save.ox, oy: save.oy, print: false, hoverId: save.hover });
+      Object.assign(this, { c: save.c, ctx: save.ctx, W: save.W, H: save.H, dpr: save.dpr, scale: save.scale, ox: save.ox, oy: save.oy, vr: save.vr, print: false, hoverId: save.hover });
       store.level = save.level; store.selectedId = save.sel;
       this.printFilter = null;
       this.redraw();
@@ -801,6 +856,7 @@ export class Plan2D {
     if (this.print) { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, this.W, this.H); }
     else if (store.view.grid) this.drawGrid();
     if (store.level > 0 && !this.print) { ctx.globalAlpha = 0.2; this.drawLevel(store.level - 1, true); ctx.globalAlpha = 1; }
+    this.drawPlot(store.level > 0 && !this.print);
     this.drawLevel(store.level, false);
     if (store.view.dims || this.print) this.drawDims();
     if (this.print) return;
@@ -819,12 +875,23 @@ export class Plan2D {
   }
   drawGrid() {
     const { ctx } = this, { minor, major } = this.gridSteps();
-    const [x0, y0] = this.s2w(0, 0), [x1, y1] = this.s2w(this.W, this.H);
+    const cs = [this.s2w(0, 0), this.s2w(this.W, 0), this.s2w(this.W, this.H), this.s2w(0, this.H)];
+    const x0 = Math.min(...cs.map((p) => p[0])), x1 = Math.max(...cs.map((p) => p[0])), y0 = Math.min(...cs.map((p) => p[1])), y1 = Math.max(...cs.map((p) => p[1]));
+    const straight = Math.abs(Math.sin(this.vr * 2)) < 1e-6;
     const lines = (step, color, lw) => {
-      ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.beginPath();
-      for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) { const sx = Math.round(this.w2s(x, 0)[0]) + 0.5; ctx.moveTo(sx, 0); ctx.lineTo(sx, this.H); }
-      for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) { const sy = Math.round(this.w2s(0, y)[1]) + 0.5; ctx.moveTo(0, sy); ctx.lineTo(this.W, sy); }
+      ctx.strokeStyle = color; ctx.beginPath();
+      if (straight) {
+        // axis-aligned view: crisp pixel-snapped lines
+        this.screenT(); ctx.lineWidth = lw;
+        for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) { const [ax, ay] = this.w2s(x, y0), [bx, by] = this.w2s(x, y1); ctx.moveTo(Math.round(ax) + 0.5, Math.round(ay) + 0.5); ctx.lineTo(Math.round(bx) + 0.5, Math.round(by) + 0.5); }
+        for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) { const [ax, ay] = this.w2s(x0, y), [bx, by] = this.w2s(x1, y); ctx.moveTo(Math.round(ax) + 0.5, Math.round(ay) + 0.5); ctx.lineTo(Math.round(bx) + 0.5, Math.round(by) + 0.5); }
+      } else {
+        this.worldT(); ctx.lineWidth = lw / this.scale;
+        for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+        for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+      }
       ctx.stroke();
+      this.screenT();
     };
     lines(minor, '#eeede8', 1);
     lines(major, '#dcdad3', 1);
@@ -905,6 +972,54 @@ export class Plan2D {
     ctx.stroke(); ctx.setLineDash([]);
     const L = Math.hypot(o.x2 - o.x1, o.y2 - o.y1);
     this.dimLine(a, b, o.label || fmtLen(L), o.color || '#334155', true, { kind: 'dimobj', o, value: L });
+  }
+
+  // Property line (dash-dot), corner letters, a length on every side and the setback line.
+  drawPlot(faint) {
+    const p = plotOf(store.doc);
+    if (!p || this.printFilter) return;
+    const { ctx } = this, pts = p.pts, n = pts.length, scr = pts.map(([x, y]) => this.w2s(x, y));
+    this.screenT();
+    ctx.save(); ctx.globalAlpha = faint ? 0.35 : 1;
+    ctx.beginPath(); scr.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath();
+    if (!this.print) { ctx.fillStyle = 'rgba(22,101,52,.035)'; ctx.fill(); }
+    ctx.strokeStyle = '#166534'; ctx.lineWidth = 2; ctx.setLineDash([14, 4, 3, 4]); ctx.stroke(); ctx.setLineDash([]);
+    const sb = setbackPoly(p);
+    if (sb) {
+      ctx.beginPath(); sb.forEach(([x, y], i) => { const [sx, sy] = this.w2s(x, y); if (i) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy); }); ctx.closePath();
+      ctx.strokeStyle = '#ea580c'; ctx.lineWidth = 1; ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // a length on every side, outside the plot; double-click to type it
+    const cx = scr.reduce((s, q) => s + q[0], 0) / n, cy = scr.reduce((s, q) => s + q[1], 0) / n;
+    ctx.restore();
+    if (!faint) for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[(i + 1) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (L < 0.05) continue;
+      const [sx1, sy1] = scr[i], [sx2, sy2] = scr[(i + 1) % n], mx = (sx1 + sx2) / 2, my = (sy1 + sy2) / 2;
+      let nx = -(sy2 - sy1), ny = sx2 - sx1; const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+      if (nx * (mx - cx) + ny * (my - cy) < 0) { nx = -nx; ny = -ny; }
+      const off = 24 / this.scale, [wx, wy] = this.s2w(sx1 + nx, sy1 + ny), [ox, oy] = [(wx - a[0]) * off * this.scale, (wy - a[1]) * off * this.scale];
+      this.dimLine([a[0] + ox, a[1] + oy], [b[0] + ox, b[1] + oy], `${String.fromCharCode(65 + i)}–${String.fromCharCode(65 + ((i + 1) % n))}  ${fmtLen(L)}`, '#166534', true, { kind: 'plotSide', o: p, i, value: L });
+    }
+    this.screenT();
+    ctx.save(); ctx.globalAlpha = faint ? 0.35 : 1;
+    scr.forEach(([x, y], i) => {
+      const live = p.edit && !p.locked && !this.print;
+      ctx.beginPath(); ctx.arc(x, y, live ? 6 : 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = live ? '#fff' : '#166534'; ctx.fill(); ctx.strokeStyle = '#166534'; ctx.lineWidth = 2; ctx.stroke();
+      let dx = x - cx, dy = y - cy; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+      ctx.font = '700 11px Inter, system-ui, sans-serif'; ctx.fillStyle = '#166534'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String.fromCharCode(65 + i), x + dx * 14, y + dy * 14);
+    });
+    if (!faint) {
+      const area = Math.abs(pts.reduce((s, [x1, y1], i) => { const [x2, y2] = pts[(i + 1) % n]; return s + x1 * y2 - x2 * y1; }, 0) / 2);
+      const top = scr.reduce((m, q) => (q[1] < m[1] ? q : m), scr[0]);
+      const label = `PLOT  ${store.doc.units === 'ft' ? `${Math.round(area * SQFT)} sq ft` : `${area.toFixed(1)} m²`}  ·  ${(area / CENT).toFixed(2)} cents`;
+      ctx.font = '700 11px Inter, system-ui, sans-serif'; const tw = ctx.measureText(label).width;
+      ctx.fillStyle = 'rgba(240,253,244,.95)'; ctx.beginPath(); ctx.roundRect(top[0] - tw / 2 - 7, top[1] - 46, tw + 14, 19, 5); ctx.fill();
+      ctx.fillStyle = '#166534'; ctx.fillText(label, top[0], top[1] - 36);
+    }
+    ctx.restore();
   }
 
   // A guide is drawn across the whole view, with its two points marked and an optional grid bubble at the edge.
@@ -1004,7 +1119,7 @@ export class Plan2D {
 
   // Wall dimensions (with optional opening chains) and overall footprint, following the dimension settings.
   drawDims() {
-    const D = dims(), walls = wallsOn(store.level), c = levelCentroid(store.level), px = 1 / this.scale;
+    const D = dims(), walls = wallsOn(store.level).filter((w) => !w.hidden), c = levelCentroid(store.level), px = 1 / this.scale;
     const chains = D.openings || store.view.pro || this.print;
     if (this.scale >= 14) for (const w of walls) {
       const ext = w.kind !== 'interior', L = wallLen(w);
@@ -1210,7 +1325,7 @@ export class Plan2D {
       const pts = this.draft.pts, last = pts[pts.length - 1];
       let pv = this.preview || last;
       if (this.typed) {
-        const L = fromUnit(parseFloat(this.typed)) || 0, a = Math.atan2(pv.y - last.y, pv.x - last.x);
+        const L = typedLen(this.typed) || 0, a = Math.atan2(pv.y - last.y, pv.x - last.x);
         pv = { x: last.x + Math.cos(a) * L, y: last.y + Math.sin(a) * L };
       }
       const L = Math.hypot(pv.x - last.x, pv.y - last.y);
@@ -1324,10 +1439,18 @@ export class Plan2D {
     ctx.fillStyle = '#334155'; ctx.fillRect(x, y, w / 2, 4); ctx.strokeStyle = '#334155'; ctx.strokeRect(x + 0.5, y + 0.5, w, 4);
     ctx.font = '600 11px Inter, system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
     ctx.fillText(ft ? `${Math.round(m / FT)} ft` : `${m} m`, x + w / 2, y - 6);
-    // north arrow
-    const nx = this.W - 34, ny = 40;
-    ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.beginPath(); ctx.arc(nx, ny, 18, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#334155'; ctx.beginPath(); ctx.moveTo(nx, ny - 13); ctx.lineTo(nx + 6, ny + 6); ctx.lineTo(nx, ny + 2); ctx.lineTo(nx - 6, ny + 6); ctx.closePath(); ctx.fill();
-    ctx.font = '700 9px Inter, sans-serif'; ctx.fillText('N', nx, ny + 15);
+    // compass: north as set for the site, turned with the view (click it to put north up)
+    const nx = this.W - 36, ny = 42, a = ((store.doc.north || 0) * Math.PI) / 180 + this.vr;
+    this.compass = { x: nx, y: ny, r: 22 };
+    ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.beginPath(); ctx.arc(nx, ny, 22, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#cbd5e1'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.save(); ctx.translate(nx, ny); ctx.rotate(a);
+    ctx.fillStyle = '#dc2626'; ctx.beginPath(); ctx.moveTo(0, -15); ctx.lineTo(5, 0); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#334155'; ctx.beginPath(); ctx.moveTo(0, 15); ctx.lineTo(5, 0); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill();
+    ctx.font = '700 8px Inter, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const [t, x, y] of [['N', 0, -19.5], ['E', 18.5, 0], ['S', 0, 18.5], ['W', -18.5, 0]]) {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(-a); ctx.fillStyle = t === 'N' ? '#dc2626' : '#64748b'; ctx.fillText(t, 0, 0.5); ctx.restore();
+    }
+    ctx.restore();
   }
 }

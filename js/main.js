@@ -1,11 +1,12 @@
 // App shell: palette, tools, properties panel, levels, shortcuts and wiring between 2D and 3D.
 import {
-  store, on, emit, checkpoint, undo, redo, setDoc, newDoc, loadSaved, getObj, uid, removeObj,
+  store, on, emit, checkpoint, dropIfUnchanged, undo, redo, setDoc, newDoc, loadSaved, getObj, uid, removeObj,
   wallsOn, openingsOf, wallLen, projectToSegment, projectToWall, toUnit, fromUnit, unitLabel, fmtLen, snapVal, DEG,
   setWallLength, setWallAngle, followJoints, fmtArea, UNITS, dims, DEFAULT_DIMS, isImperial, isDimLocked, openingTags,
 } from './state.js';
 import { CATALOG, CATALOG_INDEX, TYPES, ICONS, iconForObj, labelForObj, floorPoly, polyArea, setSideLength, inScope, objScope as objScopeOf } from './catalog.js';
 import { Plan2D } from './plan2d.js';
+import { plotOf, rect, shapePlot, siteBounds, sideLen, setSide, cornerAngle, setCornerAngle, sideBearing, setSideBearing, sideFacing, setbackPoly, plotStats, plotEditBlock, CENT, SQFT } from './plot.js';
 import { DESIGNS, keralaTraditional } from './designs.js';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -43,6 +44,7 @@ const app = {
     $('#ph-state').textContent = p.grounded ? 'on ground' : p.vel.y > 0 ? 'jumping' : 'falling';
     $('#ph-height').textContent = `feet at +${fmtLen(p.pos.y)}`;
   },
+  onViewRotate() { syncViewDir(); },
   onElevationChange(side) {
     $('#elev-select').value = side || '';
     $('#pane-3d .pane-tag').lastChild.textContent = side ? { front: 'Front elevation', rear: 'Rear elevation', left: 'Left elevation', right: 'Right elevation' }[side] : '3D View';
@@ -379,6 +381,7 @@ function field(o, p) {
   const id = 'f-' + p.key;
   const get = () => (typeof p.get === 'function' ? p.get(o) : p.get ? GETTERS[p.get](o) : o[p.key]);
   const commit = (v) => {
+    if (o.locked) { toast('This element is locked — unlock it first', true); renderProps(true); return; }
     checkpoint();
     if (p.set) SETTERS[p.set](o, v);
     else if (o.type === 'wall' && /^[xy][12]$/.test(p.key)) { const old = { x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 }; o[p.key] = v; followJoints(o, old); }
@@ -413,15 +416,15 @@ function field(o, p) {
     const v = get();
     return h('div', { class: 'info-row' + (/⚠/.test(v) ? ' warn' : '') }, h('label', {}, p.label), h('div', {}, v));
   } else if (p.kind === 'text') {
-    input = h('div', { class: 'inp' }, h('input', { id, type: 'text', value: get() || '', placeholder: 'auto', onchange: (e) => commit(e.target.value.trim()) }));
+    input = h('div', { class: 'inp' }, h('input', { id, type: 'text', value: get() || '', placeholder: 'auto', disabled: !!o.locked, onchange: (e) => commit(e.target.value.trim()) }));
   } else if (p.kind === 'color') {
-    input = h('input', { id, type: 'color', value: get() || '#ffffff', onchange: (e) => commit(e.target.value) });
+    input = h('input', { id, type: 'color', value: get() || '#ffffff', disabled: !!o.locked, onchange: (e) => commit(e.target.value) });
   } else if (p.kind === 'select') {
     const cur = get();
-    input = h('select', { id, onchange: (e) => commit(typeof cur === 'number' ? +e.target.value : e.target.value) },
+    input = h('select', { id, disabled: !!o.locked, onchange: (e) => commit(typeof cur === 'number' ? +e.target.value : e.target.value) },
       p.options.map(([v, l]) => h('option', { value: v, selected: String(v) === String(cur) }, l)));
   } else if (p.kind === 'bool') {
-    input = h('label', { class: 'switch' }, h('input', { id, type: 'checkbox', checked: !!get(), onchange: (e) => commit(e.target.checked) }), h('span'));
+    input = h('label', { class: 'switch' }, h('input', { id, type: 'checkbox', checked: !!get(), disabled: !!o.locked, onchange: (e) => commit(e.target.checked) }), h('span'));
   }
   return h('div', { class: 'row' }, h('label', { for: id }, p.label.replace(' °', '')), input);
 }
@@ -455,7 +458,7 @@ function renderProps(force = false) {
   if (TYPES[o.type].kind !== 'opening' && store.doc.levels.length > 1) {
     panel.append(h('div', { class: 'psec' }, h('h4', {}, 'Storey'),
       h('div', { class: 'row' }, h('label', {}, 'On level'),
-        h('select', { onchange: (e) => { checkpoint(); o.level = +e.target.value; for (const op of openingsOf(o.id)) op.level = o.level; store.level = o.level; emit('doc'); emit('level'); } },
+        h('select', { disabled: !!o.locked, onchange: (e) => { checkpoint(); o.level = +e.target.value; for (const op of openingsOf(o.id)) op.level = o.level; store.level = o.level; emit('doc'); emit('level'); } },
           store.doc.levels.map((l, i) => h('option', { value: i, selected: i === o.level }, l.name))))));
   }
   const acts = [
@@ -468,7 +471,7 @@ function renderProps(force = false) {
       h('button', { onclick: () => wallOnGuide(o, 'interior') }, 'Interior wall on guide'),
       h('button', { onclick: () => parallelGuide(o), title: 'Copy the guide sideways by an exact distance' }, '∥ Parallel guide…'));
   }
-  if (['floor', 'paving', 'flowerbed'].includes(o.type)) {
+  if (['floor', 'paving', 'flowerbed'].includes(o.type) && !o.locked) {
     if (o.shape !== 'custom') acts.unshift(h('button', { onclick: () => { checkpoint(); o.pts = floorPoly(o).map((p) => [...p]); o.shape = 'custom'; emit('doc'); renderProps(true); toast('Now drag the corners or double-click any side length to type it'); } }, 'Edit every side'));
     else acts.unshift(h('button', { onclick: () => {
       checkpoint();
@@ -506,6 +509,145 @@ function renderProps(force = false) {
   }
 }
 
+// ------------------------------------------------------------------ plot & orientation
+let plotDraft = null; // the shape being filled in before the plot exists
+const BOUNDARY_TYPES = new Set(['boundary', 'fence', 'gate', 'hedge']);
+function makePlot(pts) { checkpoint(); store.doc.plot = { pts, setbacks: pts.map(() => 0) }; emit('doc'); plan.fit(); renderProps(true); }
+function fitPlot(kind) {
+  const doc = store.doc, b = kind === 'boundary' ? siteBounds(doc, BOUNDARY_TYPES) : siteBounds(doc);
+  if (!b) { toast(kind === 'boundary' ? 'No boundary walls, fences or gates yet' : 'Nothing drawn yet', true); return; }
+  const m = kind === 'boundary' ? 0.12 : 1.5;
+  makePlot(rect(b.x0 - m, b.y0 - m, b.x1 - b.x0 + 2 * m, b.y1 - b.y0 + 2 * m));
+  toast(kind === 'boundary' ? 'Plot fitted to the boundary' : 'Plot fitted around everything with 1.5 m margin');
+}
+function plotArea(a) {
+  const ft = store.doc.units === 'ft';
+  return `${ft ? Math.round(a * SQFT) + ' sq ft' : a.toFixed(1) + ' m²'} · ${(a / CENT).toFixed(2)} cents${ft ? '' : ` · ${Math.round(a * SQFT)} sq ft`}`;
+}
+function renderPlot(panel) {
+  const doc = store.doc, p = plotOf(doc), sec = h('div', { class: 'psec' }, h('h4', {}, 'Plot & orientation'));
+  panel.append(sec);
+  const lenInput = (v, on, title) => h('div', { class: 'inp' }, h('input', { type: 'number', step: 'any', min: 0, value: +toUnit(v).toFixed(3), title, onchange: (e) => { const n = fromUnit(parseFloat(e.target.value)); if (n >= 0) on(n); } }), h('span', { class: 'u' }, unitLabel()));
+  // north
+  sec.append(h('div', { class: 'row' }, h('label', {}, 'North'), h('div', { class: 'inp' },
+    h('input', { type: 'number', step: 5, value: doc.north || 0, title: 'Where true north points, in degrees clockwise from the top of the plan', onchange: (e) => { checkpoint(); doc.north = ((parseFloat(e.target.value) || 0) % 360 + 360) % 360; emit('doc'); view?.setSun(view.sunHour); } }),
+    h('span', { class: 'u' }, '°'))),
+    h('div', { class: 'chips' }, [['↑ Top', 0], ['→ Right', 90], ['↓ Bottom', 180], ['← Left', 270]].map(([l, v]) => h('button', { class: (doc.north || 0) === v ? 'on' : '', title: `North points to the ${l.slice(2).toLowerCase()} of the plan`, onclick: () => { checkpoint(); doc.north = v; emit('doc'); view?.setSun(view.sunHour); renderProps(true); } }, l))),
+    h('p', { class: 'note' }, 'North sets the sun path in 3D, the compass and which way each side faces. Click the compass on the plan to turn the view north-up.'));
+  if (!p) {
+    const ft = store.doc.units === 'ft', f = (m, feet) => (ft ? feet * 0.3048 : m);
+    const v = (plotDraft ??= { kind: 'rect', w: f(10, 30), d: f(15, 40), w2: f(8, 25), side: f(15, 40), angle: 75 });
+    const row = (label, el) => h('div', { class: 'row' }, h('label', {}, label), el);
+    const shapes = [['rect', '▭ Rectangle'], ['skew', '▱ Skewed'], ['trapezoid', '⏢ Trapezoid']];
+    sec.append(h('p', { class: 'note' }, doc.plotNote ? `Plot note: ${doc.plotNote}` : 'No plot yet. Choose its shape and size, or fit it to what you have drawn. Every side and angle can be fine-tuned afterwards.'),
+      h('div', { class: 'chips' }, shapes.map(([k, l]) => h('button', { class: v.kind === k ? 'on' : '', onclick: () => { v.kind = k; renderProps(true); } }, l))),
+      row(v.kind === 'rect' ? 'Width' : 'Front width', lenInput(v.w, (n) => (v.w = n), 'Front side')),
+      v.kind === 'rect' ? row('Depth', lenInput(v.d, (n) => (v.d = n), 'Plot depth')) : null,
+      v.kind === 'trapezoid' ? row('Back width', lenInput(v.w2, (n) => (v.w2 = n), 'Back side')) : null,
+      v.kind === 'trapezoid' ? row('Depth', lenInput(v.d, (n) => (v.d = n), 'Distance front to back')) : null,
+      v.kind === 'skew' ? row('Side length', lenInput(v.side, (n) => (v.side = n), 'Length of the slanting sides')) : null,
+      v.kind === 'skew' ? row('Front-left angle', h('div', { class: 'inp' }, h('input', { type: 'number', step: 1, min: 20, max: 160, value: v.angle, title: 'Inside angle at the front-left corner (90° = rectangle; less leans right, more leans left)', onchange: (e) => { const a = parseFloat(e.target.value); if (a > 10 && a < 170) v.angle = a; } }), h('span', { class: 'u' }, '°'))) : null,
+      h('div', { class: 'actions' },
+        h('button', { class: 'primary', onclick: () => {
+          const pts = shapePlot(v.kind, v), b = siteBounds(doc);
+          const px = (Math.min(...pts.map((q) => q[0])) + Math.max(...pts.map((q) => q[0]))) / 2, py = (Math.min(...pts.map((q) => q[1])) + Math.max(...pts.map((q) => q[1]))) / 2;
+          const cx = b ? (b.x0 + b.x1) / 2 : px, cy = b ? (b.y0 + b.y1) / 2 : py;
+          makePlot(pts.map(([x, y]) => [+(x - px + cx).toFixed(4), +(y - py + cy).toFixed(4)]));
+          plotDraft = null;
+        } }, 'Set plot'),
+        h('button', { onclick: () => fitPlot('boundary') }, 'Fit to boundary walls'),
+        h('button', { onclick: () => fitPlot('all') }, 'Fit around everything')));
+    return;
+  }
+  const n = p.pts.length, st = plotStats(doc, p);
+  const stat = (k, v, warn) => h('div', { class: 'stat' + (warn ? ' warn' : '') }, h('span', {}, k), h('b', {}, v));
+  sec.append(stat('Plot area', plotArea(st.area)));
+  // one card per side: length, bearing (line angle) and setback, plus the corner angle where it starts
+  const north = doc.north || 0, L = (i) => String.fromCharCode(65 + (i % n));
+  const degInput = (v, on, title, locked) => h('div', { class: 'inp' + (locked ? ' locked' : '') }, h('input', { type: 'number', step: 0.5, value: +v.toFixed(1), title, disabled: !!locked, onchange: (e) => { const d = parseFloat(e.target.value); if (Number.isFinite(d)) on(d); } }), h('span', { class: 'u' }, '°'));
+  const lenIn = (v, on, title, locked) => { const el = lenInput(v, on, title); if (locked) { el.classList.add('locked'); el.querySelector('input').disabled = true; } return el; };
+  // refuse an edit that would move a locked side; otherwise apply it
+  const tryEdit = (what, i, fn) => { const why = plotEditBlock(p, what, i); if (why) { toast(why, true); renderProps(true); return; } checkpoint(); fn(); emit('doc'); renderProps(true); };
+  const lockBtn = (key, label) => { const on = !!p.lockDims?.[key]; return h('button', { class: 'dlock' + (on ? ' on' : ''), disabled: !!p.locked, title: `${on ? 'Unlock' : 'Lock'} this ${label}`, onclick: () => { checkpoint(); p.lockDims = { ...(p.lockDims || {}), [key]: !on }; emit('doc'); renderProps(true); } }, on ? '🔒' : '🔓'); };
+  const sides = h('div', { class: 'plot-sides' });
+  for (let i = 0; i < n; i++) {
+    const name = `${L(i)}–${L(i + 1)}`;
+    sides.append(h('div', { class: 'ps-card' },
+      h('div', { class: 'ps-t' }, h('b', {}, `Side ${name}`), h('small', {}, `faces ${sideFacing(p.pts, i, north)}`)),
+      h('div', { class: 'ps-grid' },
+        h('label', {}, h('span', { class: 'ps-l' }, 'Length', lockBtn('len' + i, 'length')), lenIn(sideLen(p.pts, i), (v) => { if (v > 0.1) tryEdit('len', i, () => setSide(p, i, v)); }, `Length of side ${name}`, p.locked || p.lockDims?.['len' + i])),
+        h('label', {}, h('span', { class: 'ps-l' }, 'Bearing', lockBtn('brg' + i, 'bearing')), degInput(sideBearing(p.pts, i, north), (d) => tryEdit('brg', i, () => setSideBearing(p, i, ((d % 360) + 360) % 360, north)), `Direction of ${name} from ${L(i)}, degrees clockwise from north (90° = east). Corner ${L(i + 1)} moves.`, p.locked || p.lockDims?.['brg' + i])),
+        h('label', {}, `Angle at ${L(i)}`, degInput(cornerAngle(p.pts, i), (d) => { if (d > 5 && d < 355) tryEdit('brg', i, () => setCornerAngle(p, i, d, north)); }, `Inside angle at corner ${L(i)}; side ${name} turns and corner ${L(i + 1)} moves`, p.locked || p.lockDims?.['brg' + i])),
+        h('label', {}, 'Setback', lenIn(p.setbacks[i] || 0, (v) => { checkpoint(); p.setbacks[i] = v; emit('doc'); }, `Building setback from side ${name}`, p.locked)))));
+  }
+  const gap = Math.hypot(p.pts[0][0] - p.pts[n - 1][0], p.pts[0][1] - p.pts[n - 1][1]);
+  sec.append(sides,
+    h('p', { class: 'note' }, `Length and bearing move the side's end corner; the last side ${L(n - 1)}–A always closes the plot (now ${fmtLen(gap)}). Bearings are compass directions from the first corner: 0° north, 90° east, 180° south, 270° west.`),
+    stat('Ground coverage', `${(st.coverage * 100).toFixed(1)} %`, st.coverage > 0.65),
+    stat('Floor area ratio (FAR)', st.far.toFixed(2)),
+    ...[st.insideSetback ? stat('Setback', `${st.insideSetback} wall${st.insideSetback > 1 ? 's' : ''} inside the setback`, true) : null,
+      st.offPlot ? stat('Outside plot', `${st.offPlot} wall${st.offPlot > 1 ? 's' : ''} cross the boundary`, true) : null].filter(Boolean),
+    h('div', { class: 'actions' },
+      h('button', { class: p.locked ? 'on' : '', title: 'Lock every side, angle and corner of the plot', onclick: () => { checkpoint(); p.locked = !p.locked; if (p.locked) p.edit = false; emit('doc'); renderProps(true); toast(p.locked ? 'Plot locked — no side, angle or corner can change' : 'Plot unlocked'); } }, p.locked ? '🔒 Plot locked' : '🔓 Lock plot'),
+      h('button', { class: p.edit ? 'on' : '', disabled: !!p.locked, title: 'Drag the plot corners in the plan', onclick: () => { p.edit = !p.edit; emit('doc'); renderProps(true); toast(p.edit ? 'Drag the green corners in the plan' : 'Plot corners locked'); } }, p.edit ? '✓ Editing corners' : 'Edit corners in plan'),
+      h('button', { disabled: !!p.locked, title: 'Split the longest side so you can make an irregular plot', onclick: () => {
+        checkpoint(); let best = 0; for (let i = 1; i < n; i++) if (sideLen(p.pts, i) > sideLen(p.pts, best)) best = i;
+        const a = p.pts[best], b = p.pts[(best + 1) % n]; p.pts.splice(best + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]); p.setbacks.splice(best + 1, 0, p.setbacks[best]); p.edit = true; emit('doc'); renderProps(true);
+      } }, '+ Corner'),
+      n > 3 ? h('button', { disabled: !!p.locked, title: 'Remove the last corner', onclick: () => { checkpoint(); p.pts.pop(); p.setbacks.pop(); emit('doc'); renderProps(true); } }, '− Corner') : null,
+      h('button', { title: 'Typical Kerala (KMBR) setbacks: 3 m front, 1.5 m rear, 1.2 m and 1 m sides', onclick: () => {
+        checkpoint();
+        const mids = p.pts.map((a, i) => (a[1] + p.pts[(i + 1) % n][1]) / 2), front = mids.indexOf(Math.max(...mids)), rear = mids.indexOf(Math.min(...mids));
+        p.setbacks = p.pts.map((_, i) => (i === front ? 3 : i === rear ? 1.5 : 1.2));
+        emit('doc'); renderProps(true); toast('Setbacks: front 3 m (the side nearest the bottom of the plan), rear 1.5 m, sides 1.2 m — check your local rules');
+      } }, 'Typical setbacks'),
+      h('button', { disabled: !!p.locked, onclick: () => fitPlot('boundary') }, 'Fit to boundary'),
+      h('button', { disabled: !!p.locked, title: 'Start the plot again as a rectangle, skewed plot or trapezoid', onclick: () => { if (!confirm('Replace this plot with a new shape?')) return; checkpoint(); delete doc.plot; emit('doc'); renderProps(true); } }, 'New shape…'),
+      h('button', { class: 'danger', disabled: !!p.locked, onclick: () => { checkpoint(); delete doc.plot; emit('doc'); renderProps(true); } }, 'Remove plot')));
+}
+
+// 2D view direction: plan-up, or a compass direction up the screen
+function syncViewDir() {
+  const sel = $('#view-dir'); if (!sel) return;
+  const n = store.doc.north || 0, up = Math.round(plan.upBearing) % 360, opts = { 0: 'north', 90: 'east', 180: 'south', 270: 'west' };
+  sel.value = Math.abs(plan.vr) < 1e-6 ? 'plan' : opts[up] || 'custom';
+  void n;
+}
+function setViewDir(v) {
+  const n = ((store.doc.north || 0) * Math.PI) / 180, bearing = { north: 0, east: 90, south: 180, west: 270 }[v];
+  plan.setRotation(v === 'plan' ? 0 : -n - (bearing * Math.PI) / 180);
+  syncViewDir();
+}
+
+// New project: name and plot size first
+function openNewProject() {
+  const u = store.doc.units || 'm', ft = u === 'ft';
+  const presets = [['5 cents · 14 × 14.5 m', 14, 14.45], ['10 cents · 18 × 22.5 m', 18, 22.48], ['30 × 40 ft', 9.144, 12.192], ['40 × 60 ft', 12.192, 18.288], ['50 × 80 ft', 15.24, 24.384], ['20 × 30 m', 20, 30]];
+  const name = h('input', { type: 'text', value: 'My home', style: 'width:100%' });
+  const W = h('input', { type: 'number', step: 'any', value: ft ? 30 : 15, style: 'width:100%' }), D = h('input', { type: 'number', step: 'any', value: ft ? 40 : 25, style: 'width:100%' });
+  const units = h('select', { style: 'width:100%' }, [['m', 'Metres'], ['ft', 'Feet']].map(([v, l]) => h('option', { value: v, selected: (ft ? 'ft' : 'm') === v }, l)));
+  const area = h('p', { class: 'note' });
+  const k = () => (units.value === 'ft' ? 0.3048 : 1);
+  const upd = () => { const a = (parseFloat(W.value) || 0) * (parseFloat(D.value) || 0) * k() * k(); area.textContent = `Plot area ${a.toFixed(1)} m² · ${(a / CENT).toFixed(2)} cents · ${Math.round(a * SQFT)} sq ft`; };
+  W.oninput = D.oninput = upd; units.onchange = () => { const f = units.value === 'ft' ? 1 / 0.3048 : 0.3048; W.value = +(W.value * f).toFixed(2); D.value = +(D.value * f).toFixed(2); upd(); };
+  const field = (l, el) => h('label', { style: 'display:block;margin:10px 0' }, h('span', { style: 'display:block;font-weight:600;margin-bottom:4px' }, l), el);
+  const create = (withPlot) => {
+    if (store.doc.objects.length && !confirm('Start a new project? Unsaved changes will be lost (Save first if needed).')) return;
+    const doc = newDoc(); doc.name = name.value.trim() || 'My home'; doc.units = units.value;
+    if (withPlot) { const w = parseFloat(W.value) * k(), d = parseFloat(D.value) * k(); if (w > 0 && d > 0) doc.plot = { pts: rect(0, 0, w, d), setbacks: [0, 0, 0, 0] }; }
+    setDoc(doc); closeModal(); plan.userMoved = false; plan.fit(); view?.frame();
+    toast(withPlot ? 'New project with your plot — set setbacks and north in the panel on the right' : 'New empty project');
+  };
+  openModal(h('div', { class: 'modal-h' }, h('h2', {}, 'New project'), h('button', { class: 'x', onclick: closeModal }, '✕')),
+    h('div', { style: 'max-width:440px' },
+      field('Project name', name),
+      h('div', { style: 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px' }, field('Plot width (front)', W), field('Plot depth', D), field('Units', units)), area,
+      h('div', { class: 'chips' }, presets.map(([l, w, d]) => h('button', { onclick: () => { const f = units.value === 'ft' ? 1 / 0.3048 : 1; W.value = +(w * f).toFixed(2); D.value = +(d * f).toFixed(2); upd(); } }, l))),
+      h('p', { class: 'note' }, 'You can change every side afterwards, make the plot irregular, and set setbacks and north in the Plot & orientation panel.'),
+      h('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px' }, h('button', { onclick: () => create(false) }, 'Skip plot'), h('button', { class: 'primary', onclick: () => create(true) }, 'Create project'))));
+  upd(); name.focus(); name.select();
+}
+
 function renderProject(panel) {
   const doc = store.doc;
   panel.append(h('div', { class: 'welcome' }, h('h2', {}, doc.name || 'My Home'),
@@ -514,7 +656,7 @@ function renderProject(panel) {
   const lv = h('div', { class: 'psec' }, h('h4', {}, 'Storeys'));
   doc.levels.forEach((l, i) => {
     lv.append(h('div', { class: 'lvl' + (i === store.level ? ' cur' : '') },
-      h('input', { value: l.name, title: 'Name', onfocus: () => { if (store.level !== i) { store.level = i; emit('level'); } }, onchange: (e) => { checkpoint(); l.name = e.target.value; emit('doc'); emit('level'); } }),
+      h('input', { value: l.name, title: 'Name', 'data-lvl': i, onfocus: () => { if (store.level !== i) { store.level = i; emit('level'); requestAnimationFrame(() => { const f = $(`#props input[data-lvl="${i}"]`); f?.focus(); f?.select(); }); } }, onchange: (e) => { checkpoint(); l.name = e.target.value; emit('doc'); emit('level'); } }),
       h('input', { type: 'number', step: 0.1, min: 2, value: +toUnit(l.height).toFixed(2), title: `Storey height (${unitLabel()})`, onchange: (e) => setLevelHeight(i, fromUnit(parseFloat(e.target.value))) }),
       i === doc.levels.length - 1 && i > 0 ? h('button', { class: 'danger', title: 'Remove this storey', onclick: () => removeLevel(i) }, '✕') : h('span')));
   });
@@ -523,8 +665,8 @@ function renderProject(panel) {
   panel.append(h('div', { class: 'psec' }, h('h4', {}, 'Project'),
     projField('Name', h('div', { class: 'inp' }, h('input', { value: doc.name || '', onchange: (e) => { checkpoint(); doc.name = e.target.value; emit('doc'); } }))),
     projField('Client / owner', h('div', { class: 'inp' }, h('input', { value: doc.client || '', placeholder: 'for the title block', onchange: (e) => { checkpoint(); doc.client = e.target.value; emit('doc'); } }))),
-    projField('Site / location', h('div', { class: 'inp' }, h('input', { value: doc.site || '', placeholder: 'e.g. Kochi, Kerala', onchange: (e) => { checkpoint(); doc.site = e.target.value; emit('doc'); } }))),
-    projField('Plot size', h('div', { class: 'inp' }, h('input', { value: doc.plot || '', placeholder: 'e.g. 15 × 25 m', onchange: (e) => { checkpoint(); doc.plot = e.target.value; emit('doc'); } })))), lv);
+    projField('Site / location', h('div', { class: 'inp' }, h('input', { value: doc.site || '', placeholder: 'e.g. Kochi, Kerala', onchange: (e) => { checkpoint(); doc.site = e.target.value; emit('doc'); } })))), lv);
+  renderPlot(panel);
   panel.append(h('div', { class: 'psec' }, h('h4', {}, 'Raise house above ground (plinth)'),
     projField(`Plinth height (${unitLabel()})`, h('div', { class: 'inp' }, h('input', { type: 'number', step: { ft: 0.25, m: 0.05, cm: 5, mm: 50 }[doc.units] || 0.05, min: 0, value: +toUnit(doc.plinth || 0).toFixed(3),
       onchange: (e) => { const v = fromUnit(parseFloat(e.target.value)); if (v >= 0 && v < 20) { checkpoint(); doc.plinth = v; emit('doc'); } } }))),
@@ -631,7 +773,8 @@ function updateStatus() {
 
 // ------------------------------------------------------------------ wiring
 function wire() {
-  $('#btn-new').onclick = () => { if (confirm('Start a new empty project? Unsaved changes will be lost.')) { setDoc(newDoc()); plan.fit(); view?.frame(); } };
+  $('#btn-new').onclick = openNewProject;
+  $('#view-dir').onchange = (e) => setViewDir(e.target.value);
   $('#btn-designs').onclick = openDesigns;
   $('#btn-pro').onclick = () => { store.view.pro = !store.view.pro; syncToggles(); plan.redraw(); toast(store.view.pro ? 'Engineer mode: tags, opening chains and engineering checks shown' : 'Simple mode'); };
   $('#units-select').onchange = (e) => { checkpoint(); store.doc.units = e.target.value; store.doc.dims = { ...(store.doc.dims || {}), precision: null }; emit('doc'); syncToggles(); renderProps(true); };
@@ -665,6 +808,8 @@ function wire() {
   $$('[data-toggle]').forEach((b) => (b.onclick = () => { const k = b.dataset.toggle; store.view[k] = !store.view[k]; syncToggles(); plan.redraw(); view?.markDirty(); }));
   $('#tools-2d').addEventListener('click', (e) => {
     const a = e.target.closest('[data-act]')?.dataset.act;
+    if (a === 'rot-l') { plan.setRotation(plan.vr - Math.PI / 2); syncViewDir(); }
+    if (a === 'rot-r') { plan.setRotation(plan.vr + Math.PI / 2); syncViewDir(); }
     if (a === 'zoom-in') plan.zoomBy(1.25);
     if (a === 'zoom-out') plan.zoomBy(0.8);
     if (a === 'fit') plan.fit();
@@ -683,6 +828,8 @@ function wire() {
   });
   document.addEventListener('fullscreenchange', () => {
     const on = document.fullscreenElement === $('#pane-3d');
+    // only the 3D pane is on screen in full screen, so messages and dialogs move into it
+    for (const el of [$('#toasts'), $('#modal')]) (on ? $('#pane-3d') : document.body).append(el);
     $('[data-act=full]').classList.toggle('on', on);
     $('[data-act=full]').textContent = on ? '⛶ Exit full screen' : '⛶ Full screen';
   });
@@ -738,7 +885,7 @@ function toggleDimSettings(force) {
     h('div', { class: 'pop-grid' },
       h('label', {}, 'Precision'), sel('precision', precOpts),
       h('label', {}, 'Snap step'), sel('snap', snapOpts),
-      h('label', {}, 'Text size'), h('input', { type: 'range', min: 8, max: 16, value: D.textSize, oninput: (e) => { doc.dims = { ...(doc.dims || {}), textSize: +e.target.value }; plan.redraw(); }, onchange: () => emit('doc') })),
+      h('label', {}, 'Text size'), h('input', { type: 'range', min: 8, max: 16, value: D.textSize, onpointerdown: () => checkpoint(), oninput: (e) => { doc.dims = { ...(doc.dims || {}), textSize: +e.target.value }; plan.redraw(); }, onchange: () => { dropIfUnchanged(); emit('doc'); } })),
     h('p', { class: 'note' }, 'Tip: double-click any dimension in the plan to type an exact value. Use the Dimension tool for your own dimension lines.'));
   pop.hidden = false;
 }
@@ -822,7 +969,10 @@ async function exportPdf() {
   } catch (err) {
     console.error(err);
     toast('PDF export failed: ' + err.message, true);
-  } finally { btn.disabled = false; btn.textContent = 'Export PDF'; }
+  } finally {
+    btn.disabled = false; btn.textContent = 'Export PDF';
+    view.forceNoRoof = undefined; view.forceLevel = undefined; view.markDirty();
+  }
 }
 
 function saveFile() {

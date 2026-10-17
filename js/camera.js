@@ -131,7 +131,7 @@ export class CameraPanel {
     const box = h('div', { class: 'cam-preview', onclick: (e) => { if (e.target === box) box.remove(); } },
       h('img', { src: s.url, alt: s.name }),
       h('div', {}, h('span', {}, `${s.name} · ${s.w}×${s.h}`), h('button', { onclick: () => this.download(s) }, '⬇ Download'), h('button', { onclick: () => box.remove() }, 'Close')));
-    document.body.append(box);
+    (document.fullscreenElement || document.body).append(box);
   }
 
   saveView() {

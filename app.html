@@ -78,6 +78,12 @@
           <button data-act="zoom-out" title="Zoom out">－</button>
           <button data-act="fit" title="Fit to screen (F)">Fit</button>
           <span class="sep"></span>
+          <button data-act="rot-l" title="Turn the plan 90° anticlockwise">⟲</button>
+          <select id="view-dir" title="Which way is up on the plan (it is always a top view)">
+            <option value="plan">Plan up</option><option value="north">North up</option><option value="south">South up</option><option value="east">East up</option><option value="west">West up</option><option value="custom" hidden>Turned</option>
+          </select>
+          <button data-act="rot-r" title="Turn the plan 90° clockwise">⟳</button>
+          <span class="sep"></span>
           <button data-toggle="dims" title="Show dimensions">Dimensions</button>
           <button data-act="dimset" title="Dimension settings: what to show, measuring rule, precision, snap">⚙</button>
           <button data-toggle="grid" title="Show grid">Grid</button>
