@@ -1,7 +1,7 @@
 // Playable third-person character for Spectate.
 //
 // Physics model (all SI units):
-//   • Body: a vertical capsule, radius 0.25 m, height 1.75 m (eye height 1.62 m).
+//   • Body: a vertical capsule, radius 0.25 m, height 1.707 m (5.6 ft; eye height 1.59 m). Avatars are scaled to it.
 //   • Walking 1.4 m/s, running 3.6 m/s (hold Shift), backwards at 55 %. Acceleration 12 m/s².
 //   • Steering: A/D turn the body at 2.4 rad/s (or drag the mouse); W/S move along the facing direction;
 //     Q/E side-step. The camera always looks the way the character's face points (V: first person).
@@ -26,7 +26,7 @@ import { makeCharacter, preloadCharacter } from './character.js';
 
 const PHYSICS_STEP = 0.35;
 export const PHYSICS = {
-  radius: 0.25, height: 1.75, eye: 1.62,
+  radius: 0.25, height: 1.707, eye: 1.59, // a 5.6 ft adult
   walk: 1.4, run: 3.6, accel: 12,
   gravity: 9.81, jump: 4.2, maxFall: 20,
   stepUp: 0.35, maxSlopeNormalY: 0.64,
@@ -46,7 +46,7 @@ export class Player {
     this.pos = new THREE.Vector3();        // feet position
     this.vel = new THREE.Vector3();
     this.grounded = false;
-    this.yaw = 0; this.pitch = 0.18; this.dist = 3.4; this.facing = 0;
+    this.yaw = 0; this.pitch = 0.12; this.dist = 2.6; this.facing = 0;
     this.keys = {};
     this.ray = new THREE.Raycaster();
     this.ray.layers.enableAll(); // the real meshes sit on layer 1 when the scene is batched
@@ -105,11 +105,13 @@ export class Player {
     const v = this.view;
     if (this.starting) return;
     // wait for the real figure; the simple one is only a fallback if it can't be loaded
-    if (!this.body) { this.starting = true; this.body = (await preloadCharacter()) || makeCharacter(); this.starting = false; }
+    if (!this.body) { this.starting = true; this.body = await this.pickAvatar(); this.starting = false; }
     if (v.elev) v.setElevation(null);
     if (v.walk) v.setWalk(false);
     v.tour?.active && v.tour.stop();
-    this.saved = { pos: v.camera.position.clone(), target: v.controls.target.clone() };
+    this.saved = { pos: v.camera.position.clone(), target: v.controls.target.clone(), fov: v.camera.fov };
+    // a person's field of view, so rooms read at their true size
+    v.camera.fov = 62; v.camera.updateProjectionMatrix();
     v.controls.enabled = false;
     v.scene.add(this.body);
     this.body.visible = true;
@@ -118,8 +120,8 @@ export class Player {
     this.collect();
     this.pos.copy(spawn.pos); this.vel.set(0, 0, 0);
     // spawn.yaw uses the old camera convention (0 = looking toward −z); facing is the body's heading (0 = +z)
-    this.facing = spawn.yaw + Math.PI; this.camYaw = this.facing; this.pitch = 0.22;
-    this.pos.y = this.groundAt(this.pos, 50, this.solids)?.y ?? spawn.pos.y;
+    this.facing = spawn.yaw + Math.PI; this.camYaw = this.facing; this.pitch = 0.12;
+    this.pos.y = this.groundAt(this.pos, 2.5, this.solids)?.y ?? spawn.pos.y; // ground near head height, never a roof
     this.visY = this.pos.y;
     this.active = true;
     window.addEventListener('keydown', this.onKey); window.addEventListener('keyup', this.onKey);
@@ -129,6 +131,25 @@ export class Player {
     v.el.focus();
     this.app.onPlayerChange?.(true);
   }
+  // Which figure walks the house. A cartoon avatar (big head) makes real rooms look tiny, so unless the user chose
+  // their own avatar, a realistically proportioned person is used; the HUD switches between them.
+  async pickAvatar() {
+    let pref = null; try { pref = localStorage.getItem('homecraft.avatar'); } catch { /* storage unavailable */ }
+    let body = pref === 'real' ? null : await preloadCharacter();
+    if (body?.userData.vrm && body.userData.cartoon && pref !== 'vrm') { this.cartoonAvailable = true; body = null; }
+    if (body?.userData.vrm) this.cartoonAvailable = !!body.userData.cartoon;
+    if (!body) body = await preloadCharacter({ realistic: true });
+    return body || makeCharacter();
+  }
+  async switchAvatar() {
+    const realNow = !this.body?.userData.vrm;
+    try { localStorage.setItem('homecraft.avatar', realNow ? 'vrm' : 'real'); } catch { /* storage unavailable */ }
+    const next = realNow ? await preloadCharacter() : await preloadCharacter({ realistic: true });
+    if (!next || next === this.body) return realNow ? 'vrm-missing' : null;
+    const old = this.body; this.body = next;
+    if (old?.parent) { old.parent.add(next); old.parent.remove(old); }
+    return realNow ? 'vrm' : 'real';
+  }
   stop() {
     if (!this.active) return;
     const v = this.view;
@@ -137,13 +158,14 @@ export class Player {
     v.el.removeEventListener('pointerdown', this.onDown); window.removeEventListener('pointermove', this.onMove); window.removeEventListener('pointerup', this.onUp);
     v.el.removeEventListener('wheel', this.onWheel);
     v.scene.remove(this.body);
+    if (v.indoorLight) v.indoorLight.intensity = 0;
     v.el.classList.remove('playing');
     // put the doors and gates back to their designed positions
     for (const d of this.doors || []) d.pivot.rotation.y = d.pivot.userData.doorLeaf.designAngle ?? 0;
     for (const s of this.sliders || []) s.g.position.x = s.rest || 0;
     v.markDirty();
     v.controls.enabled = true;
-    if (this.saved) { v.camera.position.copy(this.saved.pos); v.controls.target.copy(this.saved.target); }
+    if (this.saved) { v.camera.position.copy(this.saved.pos); v.controls.target.copy(this.saved.target); v.camera.fov = this.saved.fov ?? 45; v.camera.updateProjectionMatrix(); }
     this.app.onPlayerChange?.(false);
   }
 
@@ -262,6 +284,11 @@ export class Player {
     } else this.grounded = false;
     if (this.pos.y < -5) { this.pos.y = 0.5; this.vel.set(0, 0, 0); }
 
+    // ---- room lights: soft light indoors so rooms read at their real size instead of as dim boxes
+    this.inT = (this.inT || 0) - dt;
+    if (this.inT <= 0) { this.inT = 0.3; this.inside = this.whereAmI().room !== 'Outside'; }
+    if (v.indoorLight) v.indoorLight.intensity += ((this.inside ? 1.1 : 0) - v.indoorLight.intensity) * Math.min(1, dt * 3);
+
     // ---- what you see follows the physics smoothly: height eases over each step instead of jumping
     this.visY ??= this.pos.y;
     const gap = this.pos.y - this.visY;
@@ -281,7 +308,7 @@ export class Player {
     dyaw = Math.atan2(Math.sin(this.facing - this.camYaw), Math.cos(this.facing - this.camYaw));
     if (Math.abs(dyaw) > 0.45) this.camYaw = this.facing - Math.sign(dyaw) * 0.45;
     const look = new THREE.Vector3(Math.sin(this.camYaw) * Math.cos(this.pitch), -Math.sin(this.pitch), Math.cos(this.camYaw) * Math.cos(this.pitch));
-    const eyeH = b.userData.height ? b.userData.height * 0.92 : P.eye; // small or tall avatars get a matching eye level
+    const eyeH = b.userData.height ? b.userData.height * 0.93 : P.eye; // eyes sit about 7 % below the top of the head
     const eyeY = this.visY + eyeH + (this.grounded ? b.userData.bob || 0 : 0);
     if (this.firstPerson) {
       // first person: from the eyes, looking straight ahead (pitch from mouse drag)
@@ -291,8 +318,9 @@ export class Player {
       v.controls.target.copy(eye.clone().add(look));
     } else {
       // over the shoulder: behind and slightly above the head, looking past it in the facing direction
-      const head = new THREE.Vector3(this.pos.x, eyeY, this.pos.z);
-      const back = new THREE.Vector3(-look.x, Math.sin(this.pitch) * 0.9 + 0.12, -look.z).normalize();
+      const shoulder = new THREE.Vector3(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw)).multiplyScalar(-0.55); // over the right shoulder, so the head doesn't block the view
+      const head = new THREE.Vector3(this.pos.x, eyeY + 0.22, this.pos.z).add(shoulder);
+      const back = new THREE.Vector3(-look.x, Math.sin(this.pitch) * 0.6 + 0.06, -look.z).normalize();
       this.ray.set(head, back); this.ray.far = this.dist;
       const hit = this.ray.intersectObjects(this.nearCam, false)[0];
       const d = hit ? Math.max(0.35, hit.distance - 0.2) : this.dist;

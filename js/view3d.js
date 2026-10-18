@@ -63,6 +63,8 @@ export class View3D {
 
     this.hemi = new THREE.HemisphereLight('#dfeaff', '#5d6b46', 0.9);
     scene.add(this.hemi);
+    this.indoorLight = new THREE.HemisphereLight('#fff6e8', '#d9cfc0', 0); // warm room lighting, raised in Spectate indoors
+    scene.add(this.indoorLight);
     const sun = (this.sun = new THREE.DirectionalLight('#fff4e2', 3.2));
     sun.castShadow = true;
     sun.shadow.mapSize.set(4096, 4096);

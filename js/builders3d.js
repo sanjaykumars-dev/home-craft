@@ -367,7 +367,8 @@ B.roof = (o, g) => {
   const gableMat = finishMat('plaster', o.gableColor || '#efe8dc', { side: THREE.DoubleSide });
   const fascia = WHITE_TRIM();
   if (o.style === 'flat') {
-    g.add(boxB(W, 0.25, D, [fascia, fascia, mat, fascia, fascia, fascia], 0, 0, 0));
+    // underside is the ceiling of the rooms below: white plaster like a real slab
+    g.add(boxB(W, 0.25, D, [fascia, fascia, mat, finishMat('plaster', '#f6f4ef'), fascia, fascia], 0, 0, 0));
     const pm = finishMat('plaster', o.gableColor || '#efe8dc');
     g.add(boxB(W, 0.35, 0.12, pm, 0, 0.25, D / 2 - 0.06), boxB(W, 0.35, 0.12, pm, 0, 0.25, -D / 2 + 0.06));
     g.add(boxB(0.12, 0.35, D, pm, W / 2 - 0.06, 0.25, 0), boxB(0.12, 0.35, D, pm, -W / 2 + 0.06, 0.25, 0));

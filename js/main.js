@@ -33,7 +33,10 @@ const app = {
   showCoords(x, y) { $('#status-coords').textContent = `X ${fmtLen(x)}   Y ${fmtLen(y)}`; },
   focusProps() { $('#props input, #props select')?.focus(); },
   onWalkChange(onWalk) { $('[data-act=walk]').classList.toggle('on', onWalk); },
-  onPlayerChange(on) { $('#play-hud').hidden = !on; $('#btn-tour').classList.toggle('on', on); },
+  onPlayerChange(on) {
+    $('#play-hud').hidden = !on; $('#btn-tour').classList.toggle('on', on);
+    if (on) { const pl = view?.player; $('#ph-avatar').hidden = !pl?.cartoonAvailable && !pl?.body?.userData.vrm; $('#ph-avatar').textContent = pl?.body?.userData.vrm ? '🧍 Real person' : '🙂 My avatar'; }
+  },
   onPlayerTick(p) {
     const now = performance.now();
     if (now - (this._hudT || 0) < 150) return;
@@ -964,6 +967,13 @@ function wire() {
   $('#btn-tour').onclick = startTour;
   $('#ph-exit').onclick = () => view?.player?.stop();
   $('#ph-auto').onclick = startAutoTour;
+  $('#ph-avatar').onclick = async () => {
+    const r = await view?.player?.switchAvatar();
+    $('#ph-avatar').textContent = view?.player?.body?.userData.vrm ? '🧍 Real person' : '🙂 My avatar';
+    if (r === 'vrm') toast('Your avatar: a cartoon head makes rooms look smaller than they are');
+    if (r === 'real') toast('Realistic 5.6 ft person: rooms at their true size');
+    if (r === 'vrm-missing') toast('No avatar file in assets/character.vrm', true);
+  };
   $('#ph-physics').onclick = () => { const p = $('#ph-physics-panel'); p.hidden = !p.hidden; };
   $('#btn-pdf').onclick = exportPdf;
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
@@ -1076,8 +1086,16 @@ function toggleDimSettings(force) {
 function openModal(...content) { $('#modal-box').innerHTML = ''; $('#modal-box').append(...content); $('#modal').hidden = false; }
 function closeModal() { $('#modal').hidden = true; }
 
-function openDesigns() {
-  const cards = DESIGNS.map((d) => h('button', { class: 'design', onclick: () => {
+// designs kept only on this machine (js/my-designs.js, not part of the published app)
+let myDesigns = null;
+async function loadMyDesigns() {
+  if (myDesigns) return myDesigns;
+  try { myDesigns = (await import('./my-designs.js')).MY_DESIGNS || []; } catch { myDesigns = []; }
+  return myDesigns;
+}
+async function openDesigns() {
+  const all = [...(await loadMyDesigns()), ...DESIGNS];
+  const cards = all.map((d) => h('button', { class: 'design', onclick: () => {
     if (store.doc.objects.length && !confirm(`Load "${d.name}"? This replaces the current project (save it first if needed).`)) return;
     setDoc(d.build()); closeModal(); plan.userMoved = false; plan.fit(); view?.frame(); toast(`${d.name} loaded — explore it, then press ▶ Spectate for a guided tour`);
   } }, h('span', { class: 'dz', html: d.icon }), h('b', {}, d.name), h('small', {}, d.desc), h('span', { class: 'tags' }, d.tags.map((t) => h('i', {}, t)))));
@@ -1116,9 +1134,19 @@ async function startTour() {
   let x0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const w of ws) { x0 = Math.min(x0, w.x1, w.x2); x1 = Math.max(x1, w.x1, w.x2); y1 = Math.max(y1, w.y1, w.y2); }
   const por = store.doc.objects.find((o) => o.type === 'portico' && o.level === 0);
-  const sx = por ? por.x : ws.length ? (x0 + x1) / 2 : 0, sz = por ? por.y + por.d / 2 + 3.2 : ws.length ? y1 + 4 : 5;
+  let sx = ws.length ? (x0 + x1) / 2 : 0, sz = ws.length ? y1 + 4 : 5, yaw = 0;
+  if (por && ws.length) {
+    // step out from the building through the portico, whichever way the house faces, and look back at the door
+    const cx = ws.reduce((s, w) => s + w.x1 + w.x2, 0) / (2 * ws.length), cy = ws.reduce((s, w) => s + w.y1 + w.y2, 0) / (2 * ws.length);
+    let dx = por.x - cx, dy = por.y - cy; const L = Math.hypot(dx, dy) || 1; dx /= L; dy /= L;
+    // the portico's own axis (front = its local +y), snapped to whichever is closest to that direction
+    const r = ((por.rot || 0) * Math.PI) / 180, ax = [[-Math.sin(r), Math.cos(r)], [Math.sin(r), -Math.cos(r)]].sort((u, v) => (v[0] * dx + v[1] * dy) - (u[0] * dx + u[1] * dy))[0];
+    const out = Math.max(por.w, por.d) / 2 + 2.6;
+    sx = por.x + ax[0] * out; sz = por.y + ax[1] * out;
+    yaw = Math.atan2(-ax[0], -ax[1]) - Math.PI; // the player faces yaw + π
+  }
   const THREE = await import('three');
-  await busy($('#btn-tour'), 'Loading character…', () => view.player.start({ pos: new THREE.Vector3(sx, 0, sz), yaw: 0 }));
+  await busy($('#btn-tour'), 'Loading character…', () => view.player.start({ pos: new THREE.Vector3(sx, 0, sz), yaw }));
   const panel = $('#ph-physics-panel');
   panel.innerHTML = '';
   const rows = [['Body', `capsule ${PHYSICS.radius * 2} m wide × ${PHYSICS.height} m tall`], ['Steering', `A/D turn ${PHYSICS.turnRate} rad/s, backwards at ${Math.round(PHYSICS.backFactor * 100)} %, camera follows the face`], ['Walk / run', `${PHYSICS.walk} / ${PHYSICS.run} m/s (accel ${PHYSICS.accel} m/s²)`],

@@ -89,6 +89,9 @@ function retargetToVrm(clip, mixamoScene, vrm) {
   return out;
 }
 
+// Every Spectate character is shown at a real adult's height: 5.6 ft.
+export const PERSON_HEIGHT = 5.6 * 0.3048; // 1.707 m
+
 export async function loadVrmCharacter(url) {
   const [{ GLTFLoader }, { VRMLoaderPlugin, VRMUtils }, xbot] = await Promise.all([
     import('three/addons/loaders/GLTFLoader.js'), import('@pixiv/three-vrm'), loadXbot()]);
@@ -107,9 +110,14 @@ export async function loadVrmCharacter(url) {
   const mixer = new THREE.AnimationMixer(vrm.scene), clips = xbot.animations;
   const act = (c) => { if (!c) return null; const a = mixer.clipAction(retargetToVrm(c, xbot.scene, vrm)); a.play(); a.setEffectiveWeight(0); return a; };
   const A = { idle: act(findClip(clips, 'idle')), walk: act(findClip(clips, 'walk')), run: act(findClip(clips, 'run')), gesture: act(findClip(clips, 'agree')) };
-  const hb = new THREE.Box3().setFromObject(vrm.scene, true);
-  root.userData = { bob: 0, mocap: true, vrm, height: hb.max.y - hb.min.y }; // the camera aims at this avatar's own eye height
-  const cadence = A.walk?.getClip().userData?.cadence || 1;
+  const hb = new THREE.Box3().setFromObject(vrm.scene, true), k = PERSON_HEIGHT / Math.max(0.3, hb.max.y - hb.min.y);
+  // head size as a share of height: about 13 % for a real adult, 30–50 % for chibi / cartoon avatars
+  const neck = vrm.humanoid.getNormalizedBoneNode('neck')?.getWorldPosition(new THREE.Vector3()).y;
+  const headShare = neck != null ? (hb.max.y - neck) / Math.max(0.3, hb.max.y - hb.min.y) : 0.13;
+  // scale the avatar to a real person's height; longer legs take fewer steps for the same walking speed
+  root.scale.setScalar(k);
+  root.userData = { bob: 0, mocap: true, vrm, height: PERSON_HEIGHT, cartoon: headShare > 0.22 };
+  const cadence = (A.walk?.getClip().userData?.cadence || 1) / k;
   root.userData.animate = makeBlender(A, mixer, (dt, s) => { vrm.update(s.grounded === false ? dt * 0.25 : dt); vrm.scene.visible = !s.firstPerson; }, cadence);
   return root;
 }
@@ -139,9 +147,9 @@ export function preloadCharacter(opts = {}) {
   return preloads.get(key);
 }
 
-export async function loadMocapCharacter({ body = '#d8b99a', joints = '#6b4a36' } = {}) {
-  // a VRM avatar placed at assets/character.vrm takes priority
-  try {
+export async function loadMocapCharacter({ body = '#d8b99a', joints = '#6b4a36', realistic = false } = {}) {
+  // a VRM avatar placed at assets/character.vrm takes priority (unless a realistic human is asked for)
+  if (!realistic) try {
     const head = await fetch('assets/character.vrm', { method: 'HEAD' });
     if (head.ok) return await loadVrmCharacter('assets/character.vrm');
   } catch (err) { console.warn('VRM avatar could not be used:', err); }
@@ -149,11 +157,11 @@ export async function loadMocapCharacter({ body = '#d8b99a', joints = '#6b4a36' 
   try { src = await loadSource(); } catch { return null; }
   const { clone } = await import('three/addons/utils/SkeletonUtils.js');
   const model = clone(src.gltf.scene);
-  // fit to 1.75 m tall, feet on the ground, facing +z
+  // fit to a real person's height, feet on the ground, facing +z
   model.updateMatrixWorld(true); // measure with the armature's own scale applied
   const box = new THREE.Box3().setFromObject(model, true), h = box.max.y - box.min.y || 1;
-  model.scale.multiplyScalar(1.75 / h);
-  model.position.y = -box.min.y * (1.75 / h);
+  model.scale.multiplyScalar(PERSON_HEIGHT / h);
+  model.position.y = -box.min.y * (PERSON_HEIGHT / h);
   model.traverse((o) => {
     if (!o.isMesh) return;
     o.castShadow = true; o.frustumCulled = false;
